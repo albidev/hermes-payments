@@ -493,3 +493,159 @@ class TestProtocolVersion:
         j = i.model_copy(update={"protocol_version": "99"})
         j.id = compute_id(j)
         assert i.id != j.id
+
+
+# ===========================================================================
+# 7. P3 transport boundary invariants
+# ===========================================================================
+
+
+class TestP3TransportBoundary:
+    """P3 signed-transport boundary invariants.
+
+    These tests enforce the non-negotiable safety properties of the
+    transport layer without requiring live Buzz CLI or network.
+    """
+
+    # -- (1) PaymentApproval must never be serializable/transmittable --
+
+    def test_approval_not_in_payment_message_union(self):
+        """PaymentApproval is not part of the PaymentMessage union type."""
+        from hermes_payments.models import PaymentMessage
+        assert PaymentApproval not in PaymentMessage.__args__
+
+    def test_approval_not_in_kind_map(self):
+        """PaymentApproval has no Nostr kind assigned."""
+        from hermes_payments.envelope import KIND_MAP
+        kind_names = [k.value for k in KIND_MAP.keys()]
+        assert "approval" not in kind_names
+
+    def test_approval_encode_raises(self):
+        """encode_content() must reject PaymentApproval at runtime."""
+        from hermes_payments.transport import encode_content
+        approval = make_approval(make_intent(), make_quote(make_intent()))
+        with pytest.raises(TypeError, match="PaymentApproval must never"):
+            encode_content(approval)
+
+    def test_message_kind_enum_has_no_approval(self):
+        """MessageKind enum has exactly 3 members: INTENT, QUOTE, RECEIPT."""
+        assert len(MessageKind) == 3
+        names = [k.name for k in MessageKind]
+        assert "APPROVAL" not in names
+        assert set(names) == {"INTENT", "QUOTE", "RECEIPT"}
+
+    # -- (2) No private key in transport layer --
+
+    def test_transport_no_key_attribute(self):
+        """BuzzTransport has no private key attribute."""
+        from hermes_payments.transport import BuzzTransport, FakeExecutor
+        transport = BuzzTransport(FakeExecutor(), channel="test-uuid")
+        for attr in ["_private_key", "_keys", "_secret", "_sk"]:
+            assert not hasattr(transport, attr)
+
+    def test_fake_executor_no_key_attribute(self):
+        """FakeExecutor has no private key attribute."""
+        from hermes_payments.transport import FakeExecutor
+        executor = FakeExecutor()
+        for attr in ["_private_key", "_keys", "_secret", "_sk"]:
+            assert not hasattr(executor, attr)
+
+    # -- (3) Subprocess executor seam exists --
+
+    def test_buzz_executor_is_abstract(self):
+        """BuzzExecutor is an abstract base class."""
+        from hermes_payments.transport import BuzzExecutor
+        assert hasattr(BuzzExecutor, "send")
+        assert hasattr(BuzzExecutor, "get")
+        # Cannot instantiate directly
+        with pytest.raises(TypeError):
+            BuzzExecutor()
+
+    def test_subprocess_executor_is_concrete(self):
+        """SubprocessExecutor implements BuzzExecutor."""
+        from hermes_payments.transport import SubprocessExecutor, BuzzExecutor
+        assert issubclass(SubprocessExecutor, BuzzExecutor)
+
+    def test_fake_executor_is_concrete(self):
+        """FakeExecutor implements BuzzExecutor."""
+        from hermes_payments.transport import FakeExecutor, BuzzExecutor
+        assert issubclass(FakeExecutor, BuzzExecutor)
+
+    # -- (4) Channel scoping requires UUID --
+
+    def test_channel_required(self):
+        """BuzzTransport raises on empty channel."""
+        from hermes_payments.transport import BuzzTransport, FakeExecutor
+        with pytest.raises(ValueError, match="channel UUID is required"):
+            BuzzTransport(FakeExecutor(), channel="")
+
+    # -- (5) Receiving validates untrusted messages --
+
+    def test_validate_rejects_non_payment_kind(self):
+        """Received events with non-payment kinds are rejected."""
+        from hermes_payments.transport import (
+            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+        )
+        event = RawBuzzEvent(
+            id="ev-999", pubkey="aa" * 32, kind=1,
+            content="hello", tags=[], created_at=NOW,
+        )
+        with pytest.raises(EnvelopeValidationError, match="not a payment kind"):
+            validate_received_event(event)
+
+    def test_validate_rejects_expired_message(self):
+        """Received messages past their expiry are rejected."""
+        from hermes_payments.transport import (
+            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            encode_content,
+        )
+        intent = make_intent(expires_at=NOW - 1)
+        event = RawBuzzEvent(
+            id="ev-exp", pubkey=SENDER_PUBKEY,
+            kind=KIND_MAP[MessageKind.INTENT],
+            content=encode_content(intent),
+            tags=[], created_at=NOW - 100,
+        )
+        with pytest.raises(EnvelopeValidationError, match="expired"):
+            validate_received_event(event, clock=lambda: NOW)
+
+    def test_validate_rejects_identity_mismatch(self):
+        """Received intent with wrong author pubkey is rejected."""
+        from hermes_payments.transport import (
+            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            encode_content,
+        )
+        intent = make_intent()
+        event = RawBuzzEvent(
+            id="ev-wrong", pubkey="dd" * 32,
+            kind=KIND_MAP[MessageKind.INTENT],
+            content=encode_content(intent),
+            tags=[], created_at=NOW,
+        )
+        with pytest.raises(EnvelopeValidationError, match="does not match"):
+            validate_received_event(event, clock=lambda: NOW)
+
+    def test_validate_rejects_invalid_json(self):
+        """Received events with non-JSON content are rejected."""
+        from hermes_payments.transport import (
+            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+        )
+        event = RawBuzzEvent(
+            id="ev-bad", pubkey="aa" * 32, kind=40100,
+            content="not json", tags=[], created_at=NOW,
+        )
+        with pytest.raises(EnvelopeValidationError, match="content validation"):
+            validate_received_event(event)
+
+    # -- (6) Payment kinds match Buzz custom range --
+
+    def test_payment_kinds_in_custom_range(self):
+        """All payment kinds are in Buzz's 40000-49999 custom range."""
+        from hermes_payments.transport import PAYMENT_KINDS
+        for kind in PAYMENT_KINDS:
+            assert 40000 <= kind <= 49999
+
+    def test_payment_kinds_count(self):
+        """Three payment kinds: intent, quote, receipt."""
+        from hermes_payments.transport import PAYMENT_KINDS
+        assert len(PAYMENT_KINDS) == 3
