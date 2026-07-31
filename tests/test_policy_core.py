@@ -765,6 +765,28 @@ class TestReceiptVerify:
         assert receipt is not None
         assert orch.state(intent.id) == PaymentState.SETTLED
 
+    def test_receive_receipt_persist_failure_does_not_settle(self, monkeypatch):
+        """A durable receipt write must succeed before an external receipt settles."""
+        orch = _new_orchestrator()
+        intent = make_intent()
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        orch.approve(make_approval(intent, quote, prepared_hash=prep.prepared_hash))
+        rec = orch._intents[intent.id]
+        rec.state = transition(rec.state, "executing").new_state
+
+        def fail_record(*_args, **_kwargs):
+            raise OSError("simulated receipt store failure")
+
+        monkeypatch.setattr(orch._store, "record_receipt", fail_record)
+        with pytest.raises(OSError, match="receipt store failure"):
+            orch.receive_receipt(make_receipt(intent, quote))
+
+        assert orch.state(intent.id) == PaymentState.EXECUTING
+        assert rec.receipt is None
+
     def test_receipt_wrong_intent_rejected(self):
         orch = _new_orchestrator()
         intent = make_intent()

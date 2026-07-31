@@ -706,9 +706,12 @@ class PaymentOrchestrator:
             raise StateError(
                 f"cannot settle via receipt from state {rec.state.name}: {tr.error}"
             )
-        rec.state = tr.new_state
-        rec.receipt = receipt
+        # Persist replay protection before mutating in-memory settlement state.
+        # If persistence fails, the payment remains EXECUTING/RECONCILIATION_REQUIRED
+        # and cannot appear settled without a durable receipt binding.
         self._store.record_receipt(receipt.intent_id, receipt.settlement_ref)
+        rec.receipt = receipt
+        rec.state = tr.new_state
         self._audit.append(
             "receipt_confirmed",
             intent_id=rec.intent.id,
