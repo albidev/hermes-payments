@@ -713,6 +713,21 @@ class TestExecute:
                 prepared_hash=prepared.prepared_hash,
             )
 
+    def test_execute_reconciles_on_unknown_status(self):
+        """Only COMPLETE is a terminal success; future/unspecified states fail closed."""
+        executor = FakeWavecliExecutor()
+        executor.set_responses(
+            RAW_PREPARE_RESPONSE,
+            {"entry": {**RAW_SEND_RESPONSE["entry"], "status": "ENTRY_STATUS_UNSPECIFIED"},
+             "actual_amount_sat": 2100},
+        )
+        adapter = _make_adapter(executor=executor)
+        prepared = adapter.prepare(
+            receive_instruction=SAMPLE_RECEIVE, amount_sat=2100, max_fee_sat=100
+        )
+        with pytest.raises(AmbiguousResult, match="unknown send status"):
+            adapter.execute(prepared.prepared_payload, prepared.prepared_hash)
+
     def test_execute_ambiguous_on_pending(self):
         """execute() raises AmbiguousResult on PENDING status."""
         executor = FakeWavecliExecutor()

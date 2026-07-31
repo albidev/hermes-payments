@@ -53,6 +53,7 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -741,7 +742,6 @@ class WavelengthAdapter(SettlementAdapter):
 
         # The exact daemon preview, not merely its fee, is what policy approves.
         # A stale or inconsistent preview must never produce an approval.
-        import time
         if prepared["expires_at_unix"] <= int(time.time()):
             raise AdapterError("PrepareSend returned an expired intent")
         if prepared["amount_sat"] != amount_sat:
@@ -825,7 +825,6 @@ class WavelengthAdapter(SettlementAdapter):
             )
 
         # ── Validate expiry before dispatch ─────────────────────────────
-        import time
         expires_at = payload.get("expires_at_unix", 0)
         if not isinstance(expires_at, int) or expires_at <= int(time.time()):
             raise AdapterError(
@@ -867,19 +866,21 @@ class WavelengthAdapter(SettlementAdapter):
 
         if status == "FAILED":
             raise AdapterError(
-                f"raw Send returned FAILED: "
-                f"entry {result['entry_id']}"
+                "raw Send returned FAILED: entry "
+                f"{redact_sensitive(result['entry_id'])}"
             )
 
         if status == "PENDING":
             # Funds were dispatched but settlement not confirmed
             raise AmbiguousResult(
                 f"raw Send dispatched but status is PENDING "
-                f"(entry {result['entry_id']}); "
+                f"(entry {redact_sensitive(result['entry_id'])}); "
                 f"settlement not confirmed — manual verification required"
             )
+        if status != "COMPLETE":
+            raise AmbiguousResult(f"unknown send status: {status}")
 
-        # COMPLETE or other terminal status
+        # COMPLETE is the sole terminal success state.
         # settlement_ref = payment_hash (for Lightning, WalletEntry.id = payment_hash)
         settlement_ref = result["payment_hash"]
         if not settlement_ref:
@@ -985,7 +986,7 @@ class WavelengthAdapter(SettlementAdapter):
                 continue
 
             # ── Found a match — check status and amount ─────────────
-            if parsed["status"] not in ("COMPLETE", "FINISHED"):
+            if parsed["status"] != "COMPLETE":
                 return ReceiptVerifyResult(
                     verified=False,
                     settlement_ref=settlement_ref,
