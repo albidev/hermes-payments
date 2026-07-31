@@ -49,7 +49,6 @@ from hermes_payments.models import (
     PaymentQuote,
     PaymentReceipt,
     Rail,
-    RailReceiveInstruction,
     compute_id,
 )
 from hermes_payments.state_machine import (
@@ -434,24 +433,15 @@ class TestAdapterBoundary:
 
     def test_wavelength_rail_is_lightning(self):
         """Wavelength adapter handles LIGHTNING rail."""
-        adapter = WavelengthAdapter()
+        from hermes_payments.adapter import FakeWavecliExecutor
+        adapter = WavelengthAdapter(executor=FakeWavecliExecutor())
         assert adapter.rail == Rail.LIGHTNING
 
-    def test_prepare_not_implemented(self):
-        """WavelengthAdapter.prepare() raises NotImplementedError (stub)."""
-        adapter = WavelengthAdapter()
-        with pytest.raises(NotImplementedError, match="requires a live Wavelength daemon"):
-            adapter.prepare(
-                receive_instruction=RailReceiveInstruction(rail=Rail.LIGHTNING, invoice="lnbc..."),
-                amount_sat=2100,
-                max_fee_sat=100,
-            )
-
-    def test_execute_not_implemented(self):
-        """WavelengthAdapter.execute() raises NotImplementedError (stub)."""
-        adapter = WavelengthAdapter()
-        with pytest.raises(NotImplementedError):
-            adapter.execute(prepared_payload=b"...", prepared_hash="aa" * 32)
+    def test_wavelength_requires_regtest(self):
+        """WavelengthAdapter rejects non-regtest network."""
+        from hermes_payments.adapter import FakeWavecliExecutor
+        with pytest.raises(ValueError, match="regtest"):
+            WavelengthAdapter(executor=FakeWavecliExecutor(), network="mainnet")
 
     def test_ambiguous_result_is_adapter_error(self):
         """AmbiguousResult is a subclass of AdapterError."""
