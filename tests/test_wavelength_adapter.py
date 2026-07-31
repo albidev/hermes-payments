@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
@@ -40,6 +41,7 @@ from hermes_payments.adapter import (
     ReceiptVerifyResult,
     SettlementAdapter,
     WavelengthAdapter,
+    WavecliExecutor,
     _build_wavecli_activity_cmd,
     _build_raw_rpc_cmd,
     _parse_prepare_response,
@@ -452,6 +454,25 @@ class TestPrepare:
                 max_fee_sat=100,
             )
 
+    @pytest.mark.parametrize(
+        ("override", "match"),
+        [
+            ({"payment_hash": ""}, "empty payment_hash"),
+            ({"expires_at_unix": 1}, "expired intent"),
+            ({"amount_sat": 2099}, "does not match quoted amount"),
+            ({"expected_total_outflow_sat": 2109}, "does not equal amount plus fee"),
+        ],
+    )
+    def test_prepare_rejects_incomplete_or_inconsistent_preview(self, override, match):
+        executor = FakeWavecliExecutor()
+        executor.set_response({**RAW_PREPARE_RESPONSE, **override})
+        with pytest.raises(AdapterError, match=match):
+            _make_adapter(executor=executor).prepare(
+                receive_instruction=SAMPLE_RECEIVE,
+                amount_sat=2100,
+                max_fee_sat=100,
+            )
+
     def test_prepare_rejects_no_invoice(self):
         """prepare() rejects receive instruction without invoice."""
         adapter = _make_adapter()
@@ -656,6 +677,23 @@ class TestExecute:
         # actual_amount_sat takes precedence over entry.amount_sat
         assert result.amount_sat == 2100
 
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {"actual_amount_sat": 2099},
+            {"entry": {**RAW_SEND_RESPONSE["entry"], "id": "bb" * 32}},
+        ],
+    )
+    def test_execute_reconciles_when_result_differs_from_preview(self, override):
+        executor = FakeWavecliExecutor()
+        executor.set_responses(RAW_PREPARE_RESPONSE, {**RAW_SEND_RESPONSE, **override})
+        adapter = _make_adapter(executor=executor)
+        prepared = adapter.prepare(
+            receive_instruction=SAMPLE_RECEIVE, amount_sat=2100, max_fee_sat=100
+        )
+        with pytest.raises(AmbiguousResult, match="differs from the prepared"):
+            adapter.execute(prepared.prepared_payload, prepared.prepared_hash)
+
     def test_execute_rejects_failed_status(self):
         """execute() raises AdapterError on FAILED status."""
         executor = FakeWavecliExecutor()
@@ -742,30 +780,25 @@ class TestExecute:
                 prepared_hash=prepared.prepared_hash,
             )
 
-    def test_execute_transport_error_is_ambiguous(self):
-        """Transport error after dispatch raises AmbiguousResult (no retry)."""
-        executor = FakeWavecliExecutor()
-        executor.set_response(RAW_PREPARE_RESPONSE)
-        # Second call will raise a generic Exception (simulates transport error)
-        class TransportError(Exception):
-            pass
-        executor.set_response(TransportError("connection reset"))
-        adapter = _make_adapter(executor=executor)
+    def test_execute_executor_error_is_ambiguous(self):
+        """Any error after a Send attempt is reconciliation-only, never retry."""
+        class FailingExecutor(WavecliExecutor):
+            def run(self, cmd, *, timeout=30):
+                raise AdapterError("gRPC connection reset")
 
-        prepared = adapter.prepare(
-            receive_instruction=SAMPLE_RECEIVE,
-            amount_sat=2100,
-            max_fee_sat=100,
-        )
+        adapter = WavelengthAdapter(executor=FailingExecutor())
+        payload = json.dumps({
+            "send_intent_id": "si-live", "amount_sat": 2100,
+            "fee_sat": 10, "total_outflow_sat": 2110,
+            "expires_at_unix": int(time.time()) + 3600,
+            "payment_hash": "aa" * 32, "rail": "LIGHTNING",
+            "invoice": SAMPLE_INVOICE, "max_fee_sat": 100,
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
-        # FakeWavecliExecutor.run() returns dicts, not raises exceptions
-        # for the response queue. We need to test the exception path differently.
-        # The adapter catches Exception from executor.run() and converts to
-        # AmbiguousResult. Let's test by configuring a non-dict response.
-        with pytest.raises((AmbiguousResult, AdapterError, Exception)):
+        with pytest.raises(AmbiguousResult, match="outcome unknown"):
             adapter.execute(
-                prepared_payload=prepared.prepared_payload,
-                prepared_hash=prepared.prepared_hash,
+                prepared_payload=payload,
+                prepared_hash=compute_prepared_hash(payload),
             )
 
     def test_execute_rejects_missing_intent_id(self):

@@ -456,6 +456,11 @@ def _parse_prepare_response(data: Dict[str, Any]) -> Dict[str, Any]:
         )
 
     payment_hash = data.get("payment_hash", "")
+    if not isinstance(payment_hash, str) or not payment_hash:
+        raise AdapterError(
+            "PrepareSend returned empty payment_hash; "
+            "cannot bind a recipient receipt safely"
+        )
 
     rail_raw = data.get("rail", "")
     if isinstance(rail_raw, str):
@@ -734,11 +739,26 @@ class WavelengthAdapter(SettlementAdapter):
         # total_outflow_known, expiry, and all binding fields
         prepared = _parse_prepare_response(data)
 
-        # Fee must not exceed caller's max
+        # The exact daemon preview, not merely its fee, is what policy approves.
+        # A stale or inconsistent preview must never produce an approval.
+        import time
+        if prepared["expires_at_unix"] <= int(time.time()):
+            raise AdapterError("PrepareSend returned an expired intent")
+        if prepared["amount_sat"] != amount_sat:
+            raise AdapterError(
+                f"PrepareSend amount {prepared['amount_sat']} does not match "
+                f"quoted amount {amount_sat}"
+            )
         if prepared["expected_fee_sat"] > max_fee_sat:
             raise AdapterError(
                 f"raw PrepareSend fee {prepared['expected_fee_sat']} "
                 f"exceeds max_fee_sat {max_fee_sat}"
+            )
+        if prepared["expected_total_outflow_sat"] != (
+            prepared["amount_sat"] + prepared["expected_fee_sat"]
+        ):
+            raise AdapterError(
+                "PrepareSend total outflow does not equal amount plus fee"
             )
 
         # Build opaque prepared payload with ALL binding fields
@@ -807,10 +827,9 @@ class WavelengthAdapter(SettlementAdapter):
         # ── Validate expiry before dispatch ─────────────────────────────
         import time
         expires_at = payload.get("expires_at_unix", 0)
-        if expires_at and int(expires_at) < int(time.time()):
+        if not isinstance(expires_at, int) or expires_at <= int(time.time()):
             raise AdapterError(
-                f"prepared intent expired at {expires_at} "
-                f"(current time: {int(time.time())}); "
+                "prepared intent is missing, malformed, or expired; "
                 "re-prepare before executing"
             )
 
@@ -832,14 +851,12 @@ class WavelengthAdapter(SettlementAdapter):
 
         try:
             data = self._executor.run(cmd)
-        except AdapterError:
-            raise
         except Exception as e:
-            # Transport error after dispatch is ambiguous — we don't
-            # know if the send actually went through
+            # Send was attempted.  A CLI/gRPC error cannot prove that the
+            # daemon did not accept it, so execution errors are reconciliation
+            # cases, never a retryable failure.
             raise AmbiguousResult(
-                f"raw Send transport error after dispatch: "
-                f"{redact_sensitive(str(e))}"
+                f"raw Send outcome unknown: {redact_sensitive(str(e))}"
             ) from e
 
         # ── Parse raw SendResponse — entry + actual_amount_sat ──────────
@@ -869,6 +886,20 @@ class WavelengthAdapter(SettlementAdapter):
             raise AmbiguousResult(
                 "raw Send returned no payment_hash; "
                 "settlement status unknown"
+            )
+
+        # The daemon result must match the exact preview approved by policy.
+        if result["amount_sat"] != payload.get("amount_sat"):
+            raise AmbiguousResult(
+                "raw Send amount differs from the prepared preview"
+            )
+        if result["entry_id"] != payload.get("payment_hash"):
+            raise AmbiguousResult(
+                "raw Send entry ID differs from the prepared payment hash"
+            )
+        if result["payment_hash"] != payload.get("payment_hash"):
+            raise AmbiguousResult(
+                "raw Send payment hash differs from the prepared preview"
             )
 
         return ExecuteResult(
