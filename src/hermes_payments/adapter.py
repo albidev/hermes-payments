@@ -1,5 +1,5 @@
 """
-Hermes Payments — settlement adapter boundary (v1 — P4 Wavelength seam).
+Hermes Payments — settlement adapter boundary (v2 — P4 Wavelength seam).
 
 Defines the interface that settlement adapters (Wavelength, future
 rails) must implement.  The adapter is the ONLY component that
@@ -15,17 +15,37 @@ P4: WavelengthAdapter maps the generic prepare/execute/verify interface
 to wavecli's gRPC CLI surface.  REGTEST ONLY — every non-regtest
 configuration is rejected at construction time.
 
+DESIGN NOTE — raw RPC path vs high-level `wavecli send`:
+
+  The high-level `wavecli send <invoice> --force` (cmd_send.go walletSend)
+  ALWAYS calls PrepareSend again before dispatching Send, consuming a NEW
+  send_intent_id each time (lines 182-208).  This means it cannot execute
+  the exact intent that policy prepared and approved — a non-mutating
+  prepare followed by a force execute would produce two different intents.
+
+  The raw `wavecli dev wavewalletrpc.WalletService PrepareSend` RPC is
+  non-mutating and returns a short-lived, single-use send_intent_id.  The
+  raw `wavecli dev wavewalletrpc.WalletService Send --send-intent-id <ID>`
+  RPC consumes that exact intent without re-preparing.
+
+  Therefore the adapter MUST use the raw RPC path for prepare/execute to
+  guarantee that the approved intent is the one executed.  The high-level
+  `send` verb is unsuitable for any programmatic prepare+execute flow.
+
+  Receipt verification queries `activity --kind recv` (recipient-side),
+  NOT `activity --kind send` (sender-side).  The receipt verifier lives
+  at the recipient — it must check the recipient's incoming activity.
+
 wavecli CLI surface (source-verified):
-- ``wavecli send <BOLT11> --offchain --dry-run --max-fee <sat>``
-    returns a PrepareSendResponse JSON with send_intent_id, expected_fee_sat,
-    rail, fee_known, payment_hash, etc.
-- ``wavecli send <BOLT11> --offchain --force --max-fee <sat>``
-    executes the payment and returns a sendResult JSON with status, kind,
-    amount_sat, fee_sat, payment_hash, preimage, id.
-- ``wavecli activity --format json --kind send``
-    returns wallet activity entries for verification.
-- ``wavecli activity inspect <id>``
-    returns correlated swap/VTXO/ledger detail for one activity entry.
+- ``wavecli dev wavewalletrpc.WalletService PrepareSend --request-json <JSON>``
+    non-mutating; returns PrepareSendResponse with send_intent_id,
+    amount_sat, expected_fee_sat, fee_known, payment_hash, rail,
+    expires_at_unix, expected_total_outflow_sat, total_outflow_known.
+- ``wavecli dev wavewalletrpc.WalletService Send --send-intent-id <ID>``
+    consumes the single-use intent; returns SendResponse with entry
+    (WalletEntry) and actual_amount_sat.
+- ``wavecli activity --format json --kind recv``
+    returns wallet activity entries for recipient-side receipt verification.
 """
 
 from __future__ import annotations
@@ -179,13 +199,11 @@ class AmbiguousResult(AdapterError):
 # ---------------------------------------------------------------------------
 
 
-def _build_wavecli_send_cmd(
+def _build_raw_rpc_cmd(
     *,
-    invoice: str,
-    offchain: bool,
-    dry_run: bool,
-    force: bool,
-    max_fee_sat: Optional[int] = None,
+    service: str,
+    method: str,
+    request_json: str,
     rpc_server: Optional[str] = None,
     network: str = "regtest",
     no_tls: bool = True,
@@ -193,11 +211,10 @@ def _build_wavecli_send_cmd(
     json_output: bool = True,
     timeout: Optional[str] = None,
 ) -> List[str]:
-    """Build a wavecli send command as a list of args (injection-safe).
+    """Build a wavecli dev RPC command (injection-safe list args).
 
-    Every value is passed as a separate list element — no shell
-    interpolation occurs.  Invoice and macaroon paths are never
-    logged in full; errors/redacted via ``redact_sensitive``.
+    Uses the raw gRPC CLI path to bypass the high-level send verb
+    which re-calls PrepareSend on every invocation.
     """
     cmd: List[str] = [
         "wavecli",
@@ -213,19 +230,13 @@ def _build_wavecli_send_cmd(
     if timeout is not None:
         cmd.extend(["--timeout", timeout])
 
-    cmd.extend(["send", invoice, "--offchain"])
-    if dry_run:
-        cmd.append("--dry-run")
-    if force:
-        cmd.append("--force")
-    if max_fee_sat is not None:
-        cmd.extend(["--max-fee", str(max_fee_sat)])
+    cmd.extend(["dev", service, method, "--request-json", request_json])
     return cmd
 
 
 def _build_wavecli_activity_cmd(
     *,
-    kind: str = "send",
+    kind: str = "recv",
     rpc_server: Optional[str] = None,
     network: str = "regtest",
     no_tls: bool = True,
@@ -233,7 +244,10 @@ def _build_wavecli_activity_cmd(
     json_output: bool = True,
     inspect_id: Optional[str] = None,
 ) -> List[str]:
-    """Build a wavecli activity [inspect] command (injection-safe)."""
+    """Build a wavecli activity [inspect] command (injection-safe).
+
+    Default kind is 'recv' — receipt verification is recipient-side.
+    """
     cmd: List[str] = [
         "wavecli",
         "--network", network,
@@ -394,104 +408,134 @@ class FakeWavecliExecutor(WavecliExecutor):
 # Output parsing helpers
 # ---------------------------------------------------------------------------
 
+_RAW_RPC_SERVICE = "wavewalletrpc.WalletService"
 
-def _parse_dry_run_response(data: Dict[str, Any]) -> Tuple[int, Optional[str], str]:
-    """Parse a wavecli send --dry-run JSON response.
 
-    Returns (fee_sat, payment_hash, rail_label).
-    Raises AdapterError on missing/unexpected fields.
+def _parse_prepare_response(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse a raw PrepareSendResponse from wavecli dev RPC.
 
-    The dry-run response is the PrepareSendResponse printed as JSON.
-    Source-verified fields:
-    - expected_fee_sat: fee estimate
-    - rail: SEND_RAIL_LIGHTNING, SEND_RAIL_ONCHAIN, etc.
-    - payment_hash: Lightning payment hash (from progress or request)
-    - fee_known: whether the fee is known
+    Returns dict with all binding fields:
+      send_intent_id, amount_sat, expected_fee_sat, fee_known,
+      expected_total_outflow_sat, total_outflow_known, rail,
+      payment_hash, expires_at_unix, quote_status.
+
+    Raises AdapterError on missing send_intent_id or invalid data.
     """
-    fee_known = data.get("fee_known")
-    if fee_known is False:
+    send_intent_id = data.get("send_intent_id", "")
+    if not send_intent_id:
         raise AdapterError(
-            "dry-run returned unknown fee; cannot prepare safely"
+            "PrepareSend returned empty send_intent_id; "
+            "cannot proceed without a valid intent token"
+        )
+
+    expires_at = data.get("expires_at_unix", 0)
+    if not isinstance(expires_at, (int, float)):
+        raise AdapterError(
+            f"unexpected expires_at_unix type: {type(expires_at).__name__}"
         )
 
     fee_sat = data.get("expected_fee_sat", 0)
     if not isinstance(fee_sat, (int, float)):
         raise AdapterError(
-            f"unexpected fee type: {type(fee_sat).__name__}"
+            f"unexpected expected_fee_sat type: {type(fee_sat).__name__}"
         )
-    fee_sat = int(fee_sat)
 
-    # rail — expect SEND_RAIL_LIGHTNING or "LIGHTNING"
-    rail_label = data.get("rail", "")
-    if isinstance(rail_label, str):
-        rail_label = rail_label.replace("SEND_RAIL_", "")
-    else:
-        rail_label = str(rail_label)
-
-    # payment_hash may be nested in progress or top-level
-    payment_hash: Optional[str] = data.get("payment_hash")
-    if not payment_hash:
-        progress = data.get("progress", {})
-        if isinstance(progress, dict):
-            payment_hash = progress.get("payment_hash")
-    send_intent_id = data.get("send_intent_id", "")
-
-    return fee_sat, payment_hash, rail_label
-
-
-def _parse_send_result(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Parse a wavecli send result (after --force dispatch).
-
-    Returns a dict with: status, amount_sat, fee_sat, payment_hash,
-    id (entry ID), kind.
-    Raises AdapterError on missing fields or non-terminal status.
-
-    Source-verified sendResult struct:
-    - status: "COMPLETE" | "PENDING" | "FAILED" | "UNSPECIFIED"
-    - kind: "SEND"
-    - amount_sat: signed amount
-    - fee_sat: fee paid
-    - payment_hash: Lightning payment hash
-    - id: wallet entry ID
-    - preimage: hex preimage (only on COMPLETE)
-    """
-    status = data.get("status", "UNSPECIFIED")
-    if not isinstance(status, str):
+    fee_known = data.get("fee_known", False)
+    if not fee_known:
         raise AdapterError(
-            f"unexpected status type: {type(status).__name__}"
+            "PrepareSend returned fee_known=false; "
+            "fee must be known before policy approval"
         )
-    status = status.upper()
 
-    if status == "FAILED":
+    total_outflow_known = data.get("total_outflow_known", False)
+    total_outflow_sat = data.get("expected_total_outflow_sat", 0)
+    if not total_outflow_known:
         raise AdapterError(
-            f"wavecli send returned FAILED: "
-            f"{redact_sensitive(str(data.get('error', 'unknown')))}"
+            "PrepareSend returned total_outflow_known=false; "
+            "total outflow must be known before policy approval"
         )
 
-    if status not in ("COMPLETE", "PENDING", "UNSPECIFIED"):
-        raise AmbiguousResult(
-            f"unexpected send status: {status}"
-        )
-
-    entry_id = data.get("id", "")
-    if not entry_id:
-        raise AdapterError("wavecli send returned no entry ID")
-
-    amount_sat = int(data.get("amount_sat", 0))
-    fee_sat = int(data.get("fee_sat", 0))
     payment_hash = data.get("payment_hash", "")
 
+    rail_raw = data.get("rail", "")
+    if isinstance(rail_raw, str):
+        rail_label = rail_raw.replace("SEND_RAIL_", "")
+    else:
+        rail_label = str(rail_raw)
+
+    amount_sat = data.get("amount_sat", 0)
+    if not isinstance(amount_sat, (int, float)):
+        raise AdapterError(
+            f"unexpected amount_sat type: {type(amount_sat).__name__}"
+        )
+
     return {
-        "status": status,
+        "send_intent_id": send_intent_id,
+        "amount_sat": int(amount_sat),
+        "expected_fee_sat": int(fee_sat),
+        "fee_known": bool(fee_known),
+        "expected_total_outflow_sat": int(total_outflow_sat),
+        "total_outflow_known": bool(total_outflow_known),
+        "rail": rail_label,
+        "payment_hash": payment_hash,
+        "expires_at_unix": int(expires_at),
+        "quote_status": data.get("quote_status", ""),
+    }
+
+
+def _parse_send_response(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse a raw SendResponse from wavecli dev RPC.
+
+    SendResponse has: entry (WalletEntry) + actual_amount_sat.
+    WalletEntry.id for LIGHTNING SEND/RECV is payment_hash.
+
+    Returns dict with: entry_id, payment_hash, amount_sat, status.
+    Raises AdapterError on missing/malformed data.
+    """
+    entry = data.get("entry")
+    if not isinstance(entry, dict):
+        raise AdapterError(
+            f"SendResponse missing 'entry' dict; got "
+            f"{type(entry).__name__}"
+        )
+
+    entry_id = entry.get("id", "")
+    if not entry_id:
+        raise AdapterError("SendResponse entry has empty id")
+
+    payment_hash = _extract_payment_hash(entry)
+    if not payment_hash:
+        # For Lightning sends, WalletEntry.id IS the payment_hash
+        payment_hash = entry_id
+
+    amount_sat = int(data.get("actual_amount_sat", 0))
+    if amount_sat == 0:
+        # Fallback to entry amount
+        amount_sat = int(entry.get("amount_sat", 0))
+
+    status_raw = entry.get("status", "UNSPECIFIED")
+    if isinstance(status_raw, int):
+        # Proto enum int — normalize to string
+        _ENUM_MAP = {0: "UNSPECIFIED", 1: "PENDING", 2: "COMPLETE", 3: "FAILED"}
+        status = _ENUM_MAP.get(status_raw, str(status_raw))
+    elif isinstance(status_raw, str):
+        status = status_raw.upper().replace("ENTRY_STATUS_", "")
+    else:
+        status = str(status_raw)
+
+    fee_sat = int(entry.get("fee_sat", 0))
+
+    return {
+        "entry_id": entry_id,
+        "payment_hash": payment_hash,
         "amount_sat": amount_sat,
         "fee_sat": fee_sat,
-        "payment_hash": payment_hash,
-        "id": entry_id,
+        "status": status,
     }
 
 
 def _parse_activity_entry(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Parse a wavecli activity inspect entry.
+    """Parse a wavecli activity list entry.
 
     Returns relevant fields for receipt verification.
     Raises AdapterError on malformed data.
@@ -560,7 +604,7 @@ def _extract_payment_hash(entry: Dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Wavelength adapter (concrete, v1 — P4)
+# Wavelength adapter (concrete, v2 — P4 RAW RPC PATH)
 # ---------------------------------------------------------------------------
 
 
@@ -569,14 +613,29 @@ class WavelengthAdapter(SettlementAdapter):
 
     Maps the generic prepare/execute/verify interface to wavecli's
     gRPC CLI surface.  The adapter:
-
     - Rejects every non-regtest configuration at construction time.
-    - Uses dry-run for prepare (non-mutating).
-    - Requires --force for execute (human approval gate).
+    - Uses raw PrepareSend RPC for prepare (non-mutating).
+    - Uses raw Send RPC for execute (single-use send_intent_id).
+    - Verifies receipts against recipient-side activity (kind=recv).
     - Constructs all CLI commands as injection-safe list args.
     - Redacts invoices and macaroon paths from errors/audit.
     - Parses machine JSON strictly; unknown statuses → AmbiguousResult.
-    - Verifies receipts only against adapter-owned activity data.
+
+    DESIGN: This adapter uses the raw `wavecli dev` RPC path rather than
+    the high-level `wavecli send` verb.  The high-level `send` verb
+    (cmd_send.go walletSend) ALWAYS re-calls PrepareSend before dispatch,
+    consuming a NEW send_intent_id.  This means the execute step would
+    never dispatch the intent that was prepared and approved — a fatal
+    design flaw for any programmatic prepare→approve→execute flow.
+
+    The raw PrepareSend RPC is non-mutating and returns a short-lived,
+    single-use send_intent_id.  The raw Send RPC consumes exactly that
+    intent without re-preparing.
+
+    Receipt verification queries `activity --kind recv` (recipient-side),
+    not `activity --kind send` (sender-side).  The receipt verifier
+    lives at the recipient — it must check the recipient's incoming
+    activity for a matching payment_hash and amount.
 
     Parameters
     ----------
@@ -623,10 +682,17 @@ class WavelengthAdapter(SettlementAdapter):
         amount_sat: int,
         max_fee_sat: int,
     ) -> PrepareResult:
-        """Non-mutating dry-run via ``wavecli send --dry-run``.
+        """Non-mutating prepare via raw PrepareSend RPC.
 
-        Returns an opaque prepared payload containing the fee, invoice,
-        payment hash, and send intent ID for the eventual execute().
+        Uses the raw gRPC PrepareSend RPC which is non-mutating and
+        returns a short-lived send_intent_id.  This avoids the
+        high-level `wavecli send --dry-run` which, while non-mutating
+        in dry-run mode, goes through a code path that would be
+        unsuitable for the execute step (re-calls PrepareSend).
+
+        Returns an opaque prepared payload containing all binding
+        fields: send_intent_id, amount_sat, fee, total_outflow,
+        payment_hash, expires_at_unix, rail.
         The payload is SHA-256 hashed to produce the ``prepared_hash``
         that the human must approve before execution.
         """
@@ -638,12 +704,16 @@ class WavelengthAdapter(SettlementAdapter):
         if not invoice:
             raise AdapterError("no invoice in receive instruction")
 
-        cmd = _build_wavecli_send_cmd(
-            invoice=invoice,
-            offchain=True,
-            dry_run=True,
-            force=False,
-            max_fee_sat=max_fee_sat,
+        # Build raw PrepareSend request JSON
+        prepare_req = json.dumps({
+            "invoice": invoice,
+            "max_fee_sat": max_fee_sat,
+        }, sort_keys=True)
+
+        cmd = _build_raw_rpc_cmd(
+            service=_RAW_RPC_SERVICE,
+            method="PrepareSend",
+            request_json=prepare_req,
             rpc_server=self._rpc_server,
             network=self._network,
             no_tls=self._no_tls,
@@ -657,37 +727,40 @@ class WavelengthAdapter(SettlementAdapter):
             raise
         except Exception as e:
             raise AdapterError(
-                f"wavecli dry-run failed: {redact_sensitive(str(e))}"
+                f"raw PrepareSend failed: {redact_sensitive(str(e))}"
             ) from e
 
-        # Strict JSON parsing — never assume success
-        fee_sat, payment_hash, rail_label = _parse_dry_run_response(data)
+        # Strict parsing — validates send_intent_id, fee_known,
+        # total_outflow_known, expiry, and all binding fields
+        prepared = _parse_prepare_response(data)
 
-        if fee_sat > max_fee_sat:
+        # Fee must not exceed caller's max
+        if prepared["expected_fee_sat"] > max_fee_sat:
             raise AdapterError(
-                f"dry-run fee {fee_sat} exceeds max_fee_sat {max_fee_sat}"
+                f"raw PrepareSend fee {prepared['expected_fee_sat']} "
+                f"exceeds max_fee_sat {max_fee_sat}"
             )
 
-        # Build opaque prepared payload (adapter-internal, never leaves sender)
-        prepared_payload = json.dumps(
-            {
-                "fee_sat": fee_sat,
-                "payment_hash": payment_hash or "",
-                "rail": rail_label,
-                "invoice": invoice,
-                "send_intent_id": data.get("send_intent_id", ""),
-                "amount_sat": amount_sat,
-                "max_fee_sat": max_fee_sat,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
+        # Build opaque prepared payload with ALL binding fields
+        # (adapter-internal, never leaves the sender)
+        prepared_payload = json.dumps({
+            "send_intent_id": prepared["send_intent_id"],
+            "amount_sat": prepared["amount_sat"],
+            "fee_sat": prepared["expected_fee_sat"],
+            "total_outflow_sat": prepared["expected_total_outflow_sat"],
+            "payment_hash": prepared["payment_hash"],
+            "expires_at_unix": prepared["expires_at_unix"],
+            "rail": prepared["rail"],
+            "quote_status": prepared["quote_status"],
+            "invoice": invoice,
+            "max_fee_sat": max_fee_sat,
+        }, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
         from .models import compute_prepared_hash
         prepared_hash = compute_prepared_hash(prepared_payload)
 
         return PrepareResult(
-            fee_sat=fee_sat,
+            fee_sat=prepared["expected_fee_sat"],
             prepared_hash=prepared_hash,
             rail=Rail.LIGHTNING,
             prepared_payload=prepared_payload,
@@ -698,12 +771,14 @@ class WavelengthAdapter(SettlementAdapter):
         prepared_payload: bytes,
         prepared_hash: str,
     ) -> ExecuteResult:
-        """Execute the settlement via ``wavecli send --force``.
+        """Execute settlement via raw Send RPC with saved send_intent_id.
 
-        Requires a valid prepared_payload matching prepared_hash
-        (identity check).  The --force flag is ONLY appended after
-        the orchestrator has verified human approval of the triple
-        (intent_id, quote_id, prepared_hash).
+        This uses the raw `wavecli dev wavewalletrpc.WalletService Send`
+        RPC which consumes the single-use send_intent_id from prepare.
+        It does NOT re-call PrepareSend — the exact intent that policy
+        approved is the one that gets dispatched.
+
+        Any transport error after dispatch is AmbiguousResult (no retry).
         """
         # ── Identity check: prepared_payload must match prepared_hash ──
         from .models import compute_prepared_hash
@@ -722,19 +797,32 @@ class WavelengthAdapter(SettlementAdapter):
                 f"cannot decode prepared payload: {e}"
             ) from e
 
-        invoice = payload.get("invoice", "")
-        if not invoice:
-            raise AdapterError("prepared payload missing invoice")
+        send_intent_id = payload.get("send_intent_id", "")
+        if not send_intent_id:
+            raise AdapterError(
+                "prepared payload missing send_intent_id; "
+                "cannot dispatch without a valid intent token"
+            )
 
-        max_fee_sat = payload.get("max_fee_sat", 0)
+        # ── Validate expiry before dispatch ─────────────────────────────
+        import time
+        expires_at = payload.get("expires_at_unix", 0)
+        if expires_at and int(expires_at) < int(time.time()):
+            raise AdapterError(
+                f"prepared intent expired at {expires_at} "
+                f"(current time: {int(time.time())}); "
+                "re-prepare before executing"
+            )
 
-        # ── Build the send command (force after approval) ───────────────
-        cmd = _build_wavecli_send_cmd(
-            invoice=invoice,
-            offchain=True,
-            dry_run=False,
-            force=True,  # <-- only after policy approval
-            max_fee_sat=max_fee_sat,
+        # ── Build raw Send RPC command ──────────────────────────────────
+        send_req = json.dumps({
+            "send_intent_id": send_intent_id,
+        }, sort_keys=True)
+
+        cmd = _build_raw_rpc_cmd(
+            service=_RAW_RPC_SERVICE,
+            method="Send",
+            request_json=send_req,
             rpc_server=self._rpc_server,
             network=self._network,
             no_tls=self._no_tls,
@@ -747,34 +835,40 @@ class WavelengthAdapter(SettlementAdapter):
         except AdapterError:
             raise
         except Exception as e:
-            raise AdapterError(
-                f"wavecli send failed: {redact_sensitive(str(e))}"
+            # Transport error after dispatch is ambiguous — we don't
+            # know if the send actually went through
+            raise AmbiguousResult(
+                f"raw Send transport error after dispatch: "
+                f"{redact_sensitive(str(e))}"
             ) from e
 
-        # ── Strict JSON parsing — never assume success ──────────────────
-        result = _parse_send_result(data)
+        # ── Parse raw SendResponse — entry + actual_amount_sat ──────────
+        result = _parse_send_response(data)
 
-        # ── Durability: settlement_ref is the payment_hash ──────────────
-        # If payment_hash is empty but we have a preimage, use that.
+        # ── Map status to terminal/ambiguous ────────────────────────────
+        status = result["status"]
+
+        if status == "FAILED":
+            raise AdapterError(
+                f"raw Send returned FAILED: "
+                f"entry {result['entry_id']}"
+            )
+
+        if status == "PENDING":
+            # Funds were dispatched but settlement not confirmed
+            raise AmbiguousResult(
+                f"raw Send dispatched but status is PENDING "
+                f"(entry {result['entry_id']}); "
+                f"settlement not confirmed — manual verification required"
+            )
+
+        # COMPLETE or other terminal status
+        # settlement_ref = payment_hash (for Lightning, WalletEntry.id = payment_hash)
         settlement_ref = result["payment_hash"]
         if not settlement_ref:
-            # Check preimage — a completed Lightning send has it
-            preimage = data.get("preimage", "")
-            if preimage:
-                settlement_ref = preimage
-            else:
-                # No payment_hash and no preimage — ambiguous
-                raise AmbiguousResult(
-                    "send returned no payment_hash or preimage; "
-                    "settlement status unknown"
-                )
-
-        # For PENDING status, the settlement may not be complete yet.
-        # The orchestrator should treat this as RECONCILIATION_REQUIRED.
-        if result["status"] == "PENDING":
             raise AmbiguousResult(
-                f"send dispatched but status is PENDING (entry {result['id']}); "
-                f"settlement not confirmed — manual verification required"
+                "raw Send returned no payment_hash; "
+                "settlement status unknown"
             )
 
         return ExecuteResult(
@@ -789,23 +883,26 @@ class WavelengthAdapter(SettlementAdapter):
         settlement_ref: str,
         expected_amount_sat: int,
     ) -> ReceiptVerifyResult:
-        """Verify a receipt against adapter-owned activity/status.
+        """Verify a receipt against recipient-side activity (kind=recv).
 
-        Uses ``wavecli activity inspect <id>`` or ``wavecli activity --format json``
-        to look up the settlement reference (payment_hash) in wallet activity.
+        The receipt verifier lives at the recipient.  It must query the
+        recipient's own incoming activity (kind=recv), NOT the sender's
+        outgoing activity (kind=send).
+
+        Uses ``wavecli activity --format json --kind recv`` to list
+        recipient incoming activity and find a COMPLETE entry matching
+        the expected payment_hash and amount_sat.
 
         Source-grounded ID mapping:
-        - settlement_ref must be a payment_hash that exists in wallet activity.
+        - settlement_ref is a payment_hash that must exist in
+          recipient recv activity.
         - If no matching entry is found, we fail closed (verified=False).
         - If the entry exists but status is not COMPLETE, we fail closed.
-
-        The adapter cannot verify entries it doesn't own — it only
-        checks against activity that was settled through this adapter.
+        - Amount must match exactly.
         """
-        # ── Try to look up by payment_hash in activity ──────────────
-        # First: list all send activity and find matching payment_hash
+        # ── Query recipient-side recv activity ─────────────────────
         cmd = _build_wavecli_activity_cmd(
-            kind="send",
+            kind="recv",
             rpc_server=self._rpc_server,
             network=self._network,
             no_tls=self._no_tls,
@@ -889,10 +986,6 @@ class WavelengthAdapter(SettlementAdapter):
             )
 
         # ── No matching entry found — fail closed ───────────────────
-        # This means either:
-        # (a) The settlement never happened through this adapter, or
-        # (b) The activity query returned empty/malformed data.
-        # In both cases, we MUST NOT assume success.
         return ReceiptVerifyResult(
             verified=False,
             settlement_ref=settlement_ref,
