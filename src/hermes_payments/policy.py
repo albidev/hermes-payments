@@ -633,21 +633,40 @@ class PaymentOrchestrator:
         """Receive an externally-produced receipt.
 
         - Validates the intent exists and the receipt references it.
+        - Validates the receipt is only admissible from EXECUTING or
+          RECONCILIATION_REQUIRED (fail-closed: forged receipts in any
+          other state are rejected *before* any mutation or adapter call).
         - Validates no prior receipt exists (replay prevention).
         - Validates the receipt amount matches the intent.
         - Verifies the receipt against the adapter.
-        - Transitions to SETTLED (or RECONCILIATION_REQUIRED on mismatch).
+        - Transitions to SETTLED via state_machine.transition.
         """
         rec = self._get_record(receipt.intent_id)
 
-        # Replay prevention — no duplicate receipts
+        # ── Gate 1: admissible-state check (fail-closed) ───────────────
+        # This MUST come before any mutation, adapter call, or mismatch
+        # handling.  A forged receipt in DRAFT / SUBMITTED / QUOTED /
+        # PREPARED / APPROVED / CANCELLED / REJECTED / FAILED must never
+        # be able to force the intent into RECONCILIATION_REQUIRED or
+        # SETTLED — that would bypass the state machine.
+        if rec.state not in (PaymentState.EXECUTING, PaymentState.RECONCILIATION_REQUIRED):
+            raise StateError(
+                f"cannot receive receipt in state {rec.state.name}; "
+                f"expected EXECUTING or RECONCILIATION_REQUIRED"
+            )
+
+        # ── Gate 2: replay prevention ─────────────────────────────────
         if self._store.has_receipt(receipt.intent_id):
             raise StateError(
                 f"receipt already recorded for intent {receipt.intent_id}"
             )
 
+        # ── Gate 3: amount / adapter verification ─────────────────────
+        # Only reached when we are already in an admissible state.  On
+        # mismatch or verification failure we raise without mutating state
+        # — the intent stays in EXECUTING or RECONCILIATION_REQUIRED so
+        # manual reconciliation can investigate.
         if receipt.amount_sat != rec.intent.amount_sat:
-            rec.state = PaymentState.RECONCILIATION_REQUIRED
             self._audit.append(
                 "receipt_mismatch",
                 intent_id=rec.intent.id,
@@ -671,7 +690,6 @@ class PaymentOrchestrator:
             expected_amount_sat=receipt.amount_sat,
         )
         if not verify.verified:
-            rec.state = PaymentState.RECONCILIATION_REQUIRED
             self._audit.append(
                 "receipt_verification_failed",
                 intent_id=rec.intent.id,
@@ -682,13 +700,7 @@ class PaymentOrchestrator:
                 f"receipt verification failed: {verify.error or 'unknown'}"
             )
 
-        # Only settle via state_machine.transition from permitted states.
-        # Receipts are only accepted from EXECUTING or RECONCILIATION_REQUIRED.
-        if rec.state not in (PaymentState.EXECUTING, PaymentState.RECONCILIATION_REQUIRED):
-            raise StateError(
-                f"cannot receive receipt in state {rec.state.name}; "
-                f"expected EXECUTING or RECONCILIATION_REQUIRED"
-            )
+        # ── Transition to SETTLED ─────────────────────────────────────
         tr = transition(rec.state, "receipt_received")
         if not tr.ok:
             raise StateError(
@@ -706,17 +718,26 @@ class PaymentOrchestrator:
         return receipt
 
     def confirm_settled(self, intent_id: str) -> None:
-        """Manual reconciliation: confirm settlement from RECONCILIATION_REQUIRED."""
+        """Manual reconciliation: confirm settlement from RECONCILIATION_REQUIRED.
+
+        Order: calculate transition → persist idempotency binding → mutate
+        state + audit.  This ensures crash between persist and mutate leaves
+        the intent still in RECONCILIATION_REQUIRED (safe for retry) and the
+        idempotency record prevents a subsequent receive_receipt or
+        confirm_settled from double-settling.
+        """
         rec = self._get_record(intent_id)
         tr = transition(rec.state, "confirm_settled")
         if not tr.ok:
             raise StateError(
                 f"cannot confirm_settled from state {rec.state.value}: {tr.error}"
             )
-        rec.state = tr.new_state
-        # Record the receipt/idempotency binding so the intent cannot be
-        # settled again via a subsequent receive_receipt or confirm_settled.
+        # Persist the receipt/idempotency binding BEFORE mutating state so
+        # that a crash after persist but before state change leaves the
+        # intent in RECONCILIATION_REQUIRED with the binding already
+        # recorded — safe for a retry on next process start.
         self._store.record_receipt(intent_id, f"manual:{intent_id}")
+        rec.state = tr.new_state
         self._audit.append(
             "confirm_settled",
             intent_id=rec.intent.id,

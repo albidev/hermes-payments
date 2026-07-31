@@ -154,6 +154,7 @@ def _new_orchestrator(**kwargs):
                  "execute_result", "execute_raises", "verify_result")
     })
     store_path = kwargs.pop("store_path", None)
+    audit_path = kwargs.pop("audit_path", None)
     allowlist_recipient = kwargs.pop("recipient_allowlist", None)
     allowlist_rail = kwargs.pop("rail_allowlist", None)
     clock = kwargs.pop("clock", None)
@@ -162,6 +163,7 @@ def _new_orchestrator(**kwargs):
     return PaymentOrchestrator(
         adapter=adapter,
         store_path=store_path,
+        audit_path=audit_path,
         recipient_allowlist=allowlist_recipient,
         rail_allowlist=allowlist_rail,
         clock=clock,
@@ -1126,3 +1128,293 @@ class TestP2Regression:
         receipt = make_receipt(intent, other_quote)
         with pytest.raises(StateError):
             orch.receive_receipt(receipt)
+
+    # ── (6) Forged receipt state preservation — exhaustive coverage ────
+
+    # Every non-admissible state must reject the receipt BEFORE any
+    # mutation.  These tests verify that (a) the receipt is rejected and
+    # (b) the intent state is unchanged afterward.
+
+    FORBIDDEN_STATES = [
+        PaymentState.DRAFT,
+        PaymentState.SUBMITTED,
+        PaymentState.QUOTED,
+        PaymentState.PREPARED,
+        PaymentState.APPROVED,
+        PaymentState.CANCELLED,
+        PaymentState.REJECTED,
+        PaymentState.FAILED,
+    ]
+
+    def _receipt_rejected_in_state(self, state: PaymentState):
+        """Helper: create an intent in *state*, attempt receive_receipt,
+        assert rejection, and assert state is unchanged."""
+        orch = _new_orchestrator()
+        intent = make_intent()
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        approval = make_approval(intent, quote, prepared_hash=prep.prepared_hash)
+        orch.approve(approval)
+        # Move to EXECUTING first (to have a valid receipt path), then
+        # override to the target state.
+        orch._intents[intent.id].state = state
+        state_before = orch.state(intent.id)
+        receipt = make_receipt(intent, quote)
+        with pytest.raises(StateError, match="cannot receive receipt"):
+            orch.receive_receipt(receipt)
+        # State must be unchanged
+        assert orch.state(intent.id) == state_before
+
+    def test_forged_receipt_preserves_draft(self):
+        """Forged receipt in DRAFT leaves state unchanged."""
+        self._receipt_rejected_in_state(PaymentState.DRAFT)
+
+    def test_forged_receipt_preserves_submitted(self):
+        """Forged receipt in SUBMITTED leaves state unchanged."""
+        self._receipt_rejected_in_state(PaymentState.SUBMITTED)
+
+    def test_forged_receipt_preserves_quoted(self):
+        """Forged receipt in QUOTED leaves state unchanged."""
+        self._receipt_rejected_in_state(PaymentState.QUOTED)
+
+    def test_forged_receipt_preserves_prepared(self):
+        """Forged receipt in PREPARED leaves state unchanged."""
+        self._receipt_rejected_in_state(PaymentState.PREPARED)
+
+    def test_forged_receipt_preserves_approved(self):
+        """Forged receipt in APPROVED leaves state unchanged."""
+        self._receipt_rejected_in_state(PaymentState.APPROVED)
+
+    def test_forged_receipt_preserves_cancelled(self):
+        """Forged receipt in CANCELLED leaves state unchanged."""
+        orch = _new_orchestrator()
+        intent = make_intent()
+        orch.submit(intent)
+        orch.cancel(intent.id)
+        state_before = orch.state(intent.id)
+        assert state_before == PaymentState.CANCELLED
+        quote = make_quote(intent)
+        receipt = make_receipt(intent, quote)
+        with pytest.raises(StateError, match="cannot receive receipt"):
+            orch.receive_receipt(receipt)
+        assert orch.state(intent.id) == PaymentState.CANCELLED
+
+    def test_forged_receipt_preserves_rejected(self):
+        """Forged receipt in REJECTED leaves state unchanged."""
+        orch = _new_orchestrator()
+        intent = make_intent()
+        orch.submit(intent)
+        orch.reject(intent.id)
+        state_before = orch.state(intent.id)
+        assert state_before == PaymentState.REJECTED
+        quote = make_quote(intent)
+        receipt = make_receipt(intent, quote)
+        with pytest.raises(StateError, match="cannot receive receipt"):
+            orch.receive_receipt(receipt)
+        assert orch.state(intent.id) == PaymentState.REJECTED
+
+    def test_forged_receipt_preserves_failed(self):
+        """Forged receipt in FAILED leaves state unchanged."""
+        adapter = StubAdapter(
+            execute_raises=AdapterError("boom", recoverable=False)
+        )
+        orch = _new_orchestrator(adapter=adapter)
+        intent = make_intent()
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        approval = make_approval(intent, quote, prepared_hash=prep.prepared_hash)
+        orch.approve(approval)
+        with pytest.raises(StateError, match="reconciliation"):
+            orch.execute()
+        # Force to FAILED
+        orch._intents[intent.id].state = PaymentState.FAILED
+        state_before = orch.state(intent.id)
+        receipt = make_receipt(intent, quote)
+        with pytest.raises(StateError, match="cannot receive receipt"):
+            orch.receive_receipt(receipt)
+        assert orch.state(intent.id) == PaymentState.FAILED
+
+    # ── Mismatched / unverified receipt in EXECUTING must not mutate ───
+
+    def test_mismatched_amount_does_not_mutate_executing(self):
+        """Receipt with wrong amount in EXECUTING raises but leaves state."""
+        orch = _new_orchestrator()
+        intent = make_intent()
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        approval = make_approval(intent, quote, prepared_hash=prep.prepared_hash)
+        orch.approve(approval)
+        # Move to EXECUTING
+        rec = orch._intents[intent.id]
+        tr = transition(rec.state, "executing")
+        rec.state = tr.new_state
+        assert rec.state == PaymentState.EXECUTING
+        # Build receipt with wrong amount
+        bad_receipt = PaymentReceipt(
+            id="placeholder",
+            intent_id=intent.id,
+            quote_id=quote.quote_id,
+            settlement_ref="ref-wrong",
+            amount_sat=999999,  # doesn't match intent.amount_sat
+            fee_sat=0,
+            rail=Rail.LIGHTNING,
+            settled_at=NOW,
+            created_at=NOW,
+        )
+        bad_receipt.id = compute_id(bad_receipt)
+        with pytest.raises(StateError, match="receipt amount"):
+            orch.receive_receipt(bad_receipt)
+        # State must still be EXECUTING (not RECONCILIATION_REQUIRED)
+        assert rec.state == PaymentState.EXECUTING
+
+    def test_unverified_receipt_does_not_mutate_executing(self):
+        """Receipt that fails adapter verification in EXECUTING leaves state."""
+        adapter = StubAdapter(
+            verify_result=ReceiptVerifyResult(
+                verified=False,
+                settlement_ref="ref",
+                amount_sat=0,
+                fee_sat=0,
+                error="settlement not found",
+            )
+        )
+        orch = _new_orchestrator(adapter=adapter)
+        intent = make_intent()
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        approval = make_approval(intent, quote, prepared_hash=prep.prepared_hash)
+        orch.approve(approval)
+        # Move to EXECUTING
+        rec = orch._intents[intent.id]
+        tr = transition(rec.state, "executing")
+        rec.state = tr.new_state
+        assert rec.state == PaymentState.EXECUTING
+        receipt = make_receipt(intent, quote)
+        with pytest.raises(StateError, match="verification failed"):
+            orch.receive_receipt(receipt)
+        # State must still be EXECUTING
+        assert rec.state == PaymentState.EXECUTING
+
+    def test_mismatched_amount_does_not_mutate_reconciliation(self):
+        """Receipt with wrong amount in RECONCILIATION_REQUIRED leaves state."""
+        orch = _new_orchestrator()
+        intent = make_intent()
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        approval = make_approval(intent, quote, prepared_hash=prep.prepared_hash)
+        orch.approve(approval)
+        # Force to RECONCILIATION_REQUIRED
+        rec = orch._intents[intent.id]
+        rec.state = PaymentState.RECONCILIATION_REQUIRED
+        bad_receipt = PaymentReceipt(
+            id="placeholder",
+            intent_id=intent.id,
+            quote_id=quote.quote_id,
+            settlement_ref="ref-wrong",
+            amount_sat=999999,
+            fee_sat=0,
+            rail=Rail.LIGHTNING,
+            settled_at=NOW,
+            created_at=NOW,
+        )
+        bad_receipt.id = compute_id(bad_receipt)
+        with pytest.raises(StateError, match="receipt amount"):
+            orch.receive_receipt(bad_receipt)
+        assert rec.state == PaymentState.RECONCILIATION_REQUIRED
+
+    def test_unverified_receipt_does_not_mutate_reconciliation(self):
+        """Unverified receipt in RECONCILIATION_REQUIRED leaves state."""
+        adapter = StubAdapter(
+            verify_result=ReceiptVerifyResult(
+                verified=False,
+                settlement_ref="ref",
+                amount_sat=0,
+                fee_sat=0,
+                error="not found",
+            )
+        )
+        orch = _new_orchestrator(adapter=adapter)
+        intent = make_intent()
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        approval = make_approval(intent, quote, prepared_hash=prep.prepared_hash)
+        orch.approve(approval)
+        rec = orch._intents[intent.id]
+        rec.state = PaymentState.RECONCILIATION_REQUIRED
+        receipt = make_receipt(intent, quote)
+        with pytest.raises(StateError, match="verification failed"):
+            orch.receive_receipt(receipt)
+        assert rec.state == PaymentState.RECONCILIATION_REQUIRED
+
+    def test_receipt_mismatch_audit_logged(self, tmp_path):
+        """Receipt mismatch in EXECUTING is audit-logged."""
+        orch = _new_orchestrator(audit_path=str(tmp_path / "audit.jsonl"))
+        intent = make_intent()
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        approval = make_approval(intent, quote, prepared_hash=prep.prepared_hash)
+        orch.approve(approval)
+        rec = orch._intents[intent.id]
+        tr = transition(rec.state, "executing")
+        rec.state = tr.new_state
+        bad_receipt = PaymentReceipt(
+            id="placeholder",
+            intent_id=intent.id,
+            quote_id=quote.quote_id,
+            settlement_ref="ref-wrong",
+            amount_sat=999999,
+            fee_sat=0,
+            rail=Rail.LIGHTNING,
+            settled_at=NOW,
+            created_at=NOW,
+        )
+        bad_receipt.id = compute_id(bad_receipt)
+        with pytest.raises(StateError, match="receipt amount"):
+            orch.receive_receipt(bad_receipt)
+        entries = orch._audit.entries()
+        assert any(e["event"] == "receipt_mismatch" for e in entries)
+
+    def test_receipt_verification_failure_audit_logged(self, tmp_path):
+        """Verification failure in EXECUTING is audit-logged."""
+        adapter = StubAdapter(
+            verify_result=ReceiptVerifyResult(
+                verified=False,
+                settlement_ref="ref",
+                amount_sat=0,
+                fee_sat=0,
+                error="not found",
+            )
+        )
+        orch = _new_orchestrator(
+            adapter=adapter,
+            audit_path=str(tmp_path / "audit.jsonl"),
+        )
+        intent = make_intent()
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        approval = make_approval(intent, quote, prepared_hash=prep.prepared_hash)
+        orch.approve(approval)
+        rec = orch._intents[intent.id]
+        tr = transition(rec.state, "executing")
+        rec.state = tr.new_state
+        receipt = make_receipt(intent, quote)
+        with pytest.raises(StateError, match="verification failed"):
+            orch.receive_receipt(receipt)
+        entries = orch._audit.entries()
+        assert any(e["event"] == "receipt_verification_failed" for e in entries)
