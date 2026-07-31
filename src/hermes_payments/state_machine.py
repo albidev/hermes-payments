@@ -68,6 +68,10 @@ TRANSITIONS: Dict[Tuple[PaymentState, str], PaymentState] = {
     (PaymentState.APPROVED, "adapter_error"): PaymentState.FAILED,
     (PaymentState.EXECUTING, "adapter_error"): PaymentState.RECONCILIATION_REQUIRED,
 
+    # External receipt confirmation (recipient sends receipt)
+    (PaymentState.EXECUTING, "receipt_received"): PaymentState.SETTLED,
+    (PaymentState.RECONCILIATION_REQUIRED, "receipt_received"): PaymentState.SETTLED,
+
     # Manual reconciliation: human verifies settlement actually happened
     (PaymentState.RECONCILIATION_REQUIRED, "confirm_settled"): PaymentState.SETTLED,
 }

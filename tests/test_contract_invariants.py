@@ -162,12 +162,15 @@ class TestStateMachine:
         assert result.new_state == PaymentState.SETTLED
 
     def test_reconciliation_rejects_other_triggers(self):
-        """RECONCILIATION_REQUIRED only allows confirm_settled."""
+        """RECONCILIATION_REQUIRED only allows confirm_settled and receipt_received."""
         for trigger in ["submit", "cancel", "rejected", "expired",
                          "adapter_error", "executing", "settled",
                          "quote_received", "prepared", "approved"]:
             result = transition(PaymentState.RECONCILIATION_REQUIRED, trigger)
             assert not result.ok, f"RECONCILIATION_REQUIRED accepted trigger '{trigger}'"
+        # receipt_received and confirm_settled ARE allowed
+        assert can_transition(PaymentState.RECONCILIATION_REQUIRED, "receipt_received")
+        assert can_transition(PaymentState.RECONCILIATION_REQUIRED, "confirm_settled")
 
     def test_approval_requires_prepare(self):
         """APPROVED can only be reached from PREPARED."""
@@ -191,7 +194,9 @@ class TestStateMachine:
             (PaymentState.EXECUTING, "settled"): PaymentState.SETTLED,
             (PaymentState.EXECUTING, "expired"): PaymentState.RECONCILIATION_REQUIRED,
             (PaymentState.EXECUTING, "adapter_error"): PaymentState.RECONCILIATION_REQUIRED,
+            (PaymentState.EXECUTING, "receipt_received"): PaymentState.SETTLED,
             (PaymentState.RECONCILIATION_REQUIRED, "confirm_settled"): PaymentState.SETTLED,
+            (PaymentState.RECONCILIATION_REQUIRED, "receipt_received"): PaymentState.SETTLED,
         }
         for (state, trigger), expected in expected_transitions.items():
             result = transition(state, trigger)
