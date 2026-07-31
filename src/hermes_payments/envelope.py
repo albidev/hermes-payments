@@ -70,35 +70,13 @@ def _get_model_map() -> Dict[str, Type[PaymentMessage]]:
     return _MODEL_MAP
 
 
-# Backward-compat: KIND_MAP now maps every payment type to kind 9.
+# ``KIND_MAP`` remains for callers that need the Nostr kind, but the
+# envelope ``type`` is the sole discriminator.  Never reverse-map kind 9.
 KIND_MAP: Dict[MessageKind, int] = {
     MessageKind.INTENT: WIRE_KIND,
     MessageKind.QUOTE: WIRE_KIND,
     MessageKind.RECEIPT: WIRE_KIND,
 }
-
-REVERSE_KIND_MAP: Dict[int, MessageKind] = {
-    WIRE_KIND: MessageKind.INTENT,  # ambiguous on kind alone; envelope type discriminates
-}
-
-MODEL_MAP: Dict[MessageKind, Type[PaymentMessage]] = {
-    MessageKind.INTENT: None,  # type: ignore[assignment]  # filled lazily
-    MessageKind.QUOTE: None,  # type: ignore[assignment]
-    MessageKind.RECEIPT: None,  # type: ignore[assignment]
-}
-
-
-def _init_model_map() -> None:
-    """Initialise MODEL_MAP from the lazy model map."""
-    global MODEL_MAP
-    mm = _get_model_map()
-    from .models import PaymentIntent, PaymentQuote
-
-    MODEL_MAP = {
-        MessageKind.INTENT: PaymentIntent,
-        MessageKind.QUOTE: PaymentQuote,
-        MessageKind.RECEIPT: PaymentReceipt,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -273,8 +251,7 @@ def _build_tags(message: PaymentMessage) -> List[List[str]]:
         ["protocol", "hermes-payments-v1"],
     ]
 
-    if hasattr(message, "id"):
-        tags.append(["intent", getattr(message, "intent_id", message.id)])
+    tags.append(["intent", getattr(message, "intent_id", message.id)])
 
     return tags
 

@@ -427,6 +427,18 @@ class TestValidateReceivedEvent:
                 event, expected_channel=CHANNEL_UUID, clock=lambda: NOW
             )
 
+    def test_rejects_empty_h_tag(self):
+        """An empty h-tag is not valid channel scope."""
+        intent = make_intent()
+        event = RawBuzzEvent(
+            id="ev-empty-h", pubkey=SENDER_PUBKEY, kind=9,
+            content=encode_content(intent), tags=[["h", ""]], created_at=NOW,
+        )
+        with pytest.raises(EnvelopeValidationError, match="does not match"):
+            validate_received_event(
+                event, expected_channel=CHANNEL_UUID, clock=lambda: NOW
+            )
+
     def test_rejects_invalid_protocol_in_content(self):
         """Content with wrong protocol must be rejected."""
         bad_content = json.dumps({
