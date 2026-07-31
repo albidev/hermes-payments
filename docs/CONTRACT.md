@@ -20,12 +20,15 @@ Sender (Hermes A)                    Buzz                     Recipient (Hermes 
       |<-- PaymentQuote ─────────────|                              |
       |                               |                              |
       |  [adapter.prepare()]          |                              |
-      |--- PaymentApproval ──────────>|--- PaymentApproval ────────>|
-      |    (intent, quote,            |                              |
-      |     prepared_hash)            |    [adapter.execute()]       |
+      |  [local human approval]       |                              |
+      |  [adapter.execute()]          |                              |
       |                               |<-- PaymentReceipt ─────────-|
       |<-- PaymentReceipt ───────────|                              |
 ```
+
+**Note:** `PaymentApproval` is **strictly local** authorisation.
+It is never a Buzz/Nostr message, never enters a transport envelope,
+and never traverses the relay network.
 
 ### Design principles
 
@@ -89,10 +92,12 @@ instruction.
 | `rail` | `"lightning"` | Settlement rail |
 | `invoice` | string \| null | Lightning invoice (bolt11) |
 
-### 2.3 PaymentApproval
+### 2.3 PaymentApproval (strictly local)
 
 Human approval binding. This is the **only** message that authorises
-execution.
+execution.  **PaymentApproval is strictly local — it is never a
+Buzz/Nostr message, never enters an envelope, and never traverses
+the relay network.**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
@@ -132,14 +137,14 @@ Each `PaymentIntent` follows a deterministic lifecycle:
 
 ```
 DRAFT ──submit──> SUBMITTED ──quote_received──> QUOTED ──prepared──> PREPARED ──approved──> APPROVED ──executing──> EXECUTING ──settled──> SETTLED
-  │                  │              │                │                │
-  │cancel            │cancel        │cancel          │cancel          │
-  v                  v              v                v                v
-CANCELLED          CANCELLED     CANCELLED        CANCELLED        EXPIRED / FAILED
-                   │              │                │
-                   │rejected      │rejected        │rejected
-                   v              v                v
-                 REJECTED       REJECTED         REJECTED
+  │                  │              │                │                │                        │
+  │cancel            │cancel        │cancel          │cancel          │                        │expired / adapter_error
+  v                  v              v                v                v                        v
+CANCELLED          CANCELLED     CANCELLED        CANCELLED        EXPIRED / FAILED    RECONCILIATION_REQUIRED
+                   │              │                │                                        │
+                   │rejected      │rejected        │rejected                                │confirm_settled (manual)
+                   v              v                v                                        v
+                 REJECTED       REJECTED         REJECTED                                  SETTLED
 ```
 
 ### Terminal states
@@ -147,10 +152,16 @@ CANCELLED          CANCELLED     CANCELLED        CANCELLED        EXPIRED / FAI
 No further transitions are possible from:
 
 - `SETTLED` — payment completed
-- `FAILED` — adapter error
+- `FAILED` — adapter error (pre-execution only)
 - `REJECTED` — recipient or human rejection
-- `EXPIRED` — intent/quote expiry
+- `EXPIRED` — intent/quote expiry (pre-execution only)
 - `CANCELLED` — sender cancellation
+
+**Non-terminal special state:**
+
+- `RECONCILIATION_REQUIRED` — timeout or ambiguous adapter result
+  during execution. Requires manual human verification before
+  transitioning to `SETTLED`. No automatic retry is permitted.
 
 ### Valid transitions
 
@@ -164,8 +175,11 @@ No further transitions are possible from:
 | EXECUTING | `settled` | SETTLED |
 | DRAFT–PREPARED | `cancel` | CANCELLED |
 | SUBMITTED–APPROVED | `rejected` | REJECTED |
-| SUBMITTED–EXECUTING | `expired` | EXPIRED |
-| QUOTED–EXECUTING | `adapter_error` | FAILED |
+| SUBMITTED–APPROVED | `expired` | EXPIRED |
+| EXECUTING | `expired` | RECONCILIATION_REQUIRED |
+| QUOTED–APPROVED | `adapter_error` | FAILED |
+| EXECUTING | `adapter_error` | RECONCILIATION_REQUIRED |
+| RECONCILIATION_REQUIRED | `confirm_settled` | SETTLED |
 
 ### Invariant: approval requires prepare
 
@@ -257,8 +271,10 @@ Each domain message maps to a signed Buzz/Nostr event:
 |------|---------|-------------|
 | 40100 | PaymentIntent | Sender-initiated payment request |
 | 40101 | PaymentQuote | Recipient's quote with receive instruction |
-| 40102 | PaymentApproval | Human approval binding |
 | 40103 | PaymentReceipt | Settlement confirmation |
+
+**Note:** `PaymentApproval` has no Buzz kind — it is strictly local
+authorisation and never enters the transport layer.
 
 ### Tag conventions
 
@@ -272,9 +288,13 @@ Message-specific tags:
 | Message | Additional tags |
 |---------|----------------|
 | Intent | `["intent", id]`, `["p", recipient_pubkey]` |
-| Quote | `["intent", intent_id]`, `["quote", quote_id]`, `["p", recipient_pubkey]` |
-| Approval | `["intent", intent_id]`, `["quote", quote_id]` |
+| Quote | `["intent", intent_id]`, `["quote", quote_id]`, `["p", sender_pubkey]` (placeholder — see Gate 3) |
 | Receipt | `["intent", intent_id]`, `["settlement", settlement_ref]` |
+
+**Note:** The quote is sent FROM recipient TO sender.  The `["p", ...]`
+tag should address the sender (the entity the quote is delivered to).
+PaymentQuote.model does not carry sender — that is resolved from the
+referenced PaymentIntent at envelope construction (Gate 3).
 
 ### Signing model
 
@@ -332,25 +352,21 @@ class SettlementAdapter(ABC):
 | No credential transit | Seeds, passwords, macaroons never leave the adapter |
 | No protocol knowledge | Adapter knows rail instructions, not intent/approval |
 
-### Wavelength adapter mapping (v0)
+### Wavelength adapter mapping (DEFERRED to Gate 4)
 
-| Generic operation | Wavelength MCP tool |
-|-------------------|---------------------|
-| `prepare()` | `send.prepare` (dry run) |
-| `execute()` | `send` with `--yes` |
-| `verify_receipt()` | `activity` + `balance` |
-
-The adapter calls `wavecli --no-tls --no-macaroons --network=regtest`
-for regtest. Credentials stay local and are never passed through
-Buzz events or the adapter boundary.
+The specific wavecli command mapping is deferred to Gate 4, which will
+verify flags/tools against a live Wavelength daemon.  The adapter
+interface is defined; concrete command strings are not asserted until
+verified.
 
 ### Error handling
 
 | Error | State transition | Behaviour |
 |-------|-----------------|-----------|
-| `AdapterError` | → FAILED | Human must investigate |
-| `AmbiguousResult` | → EXPIRED | No retry; human investigates |
-| Adapter crash | → FAILED or stays in EXECUTING | Recovery via state persistence |
+| `AdapterError` (pre-execution) | → FAILED | Human must investigate |
+| `AdapterError` (during execution) | → RECONCILIATION_REQUIRED | Human verifies settlement manually |
+| `AmbiguousResult` | → RECONCILIATION_REQUIRED | No retry; human investigates |
+| Adapter crash | → RECONCILIATION_REQUIRED or stays in EXECUTING | Recovery via state persistence |
 
 ---
 
@@ -381,7 +397,11 @@ The following invariants are validated by `tests/test_contract_invariants.py`:
 | State machine | Cancel works from DRAFT–PREPARED only | `test_cancellation_from_active_states` |
 | State machine | Cannot cancel after approval | `test_cannot_cancel_from_approved` |
 | State machine | Approval requires prepare | `test_approval_requires_prepare` |
-| State machine | Adapter errors → FAILED | `test_adapter_error_from_active` |
+| State machine | Adapter errors pre-execution → FAILED | `test_adapter_error_from_pre_execution` |
+| State machine | Adapter error during execution → RECONCILIATION_REQUIRED | `test_adapter_error_from_executing_goes_to_reconciliation` |
+| State machine | Expiry during execution → RECONCILIATION_REQUIRED | `test_expiry_from_executing_goes_to_reconciliation` |
+| State machine | RECONCILIATION_REQUIRED is non-terminal (confirm_settled works) | `test_reconciliation_not_terminal` |
+| State machine | RECONCILIATION_REQUIRED rejects all triggers except confirm_settled | `test_reconciliation_rejects_other_triggers` |
 | Idempotency | Same fields → same ID | `test_deterministic_id` |
 | Idempotency | Different key → different ID | `test_different_idempotency_key_different_id` |
 | Idempotency | Different amount → different ID | `test_different_amount_different_id` |
@@ -391,9 +411,11 @@ The following invariants are validated by `tests/test_contract_invariants.py`:
 | Serialization | Canonical bytes deterministic | `test_deterministic_canonical_bytes` |
 | Serialization | ID = SHA-256 of canonical form | `test_id_matches_canonical_hash` |
 | Serialization | None values excluded | `test_none_values_excluded` |
-| Envelope | Round-trip for all message types | `test_*_round_trip` |
+| Envelope | Round-trip for Intent, Quote, Receipt | `test_*_round_trip` |
 | Envelope | Non-payment kind rejected | `test_non_payment_kind_rejected` |
 | Envelope | Kind constants in Buzz custom range | `test_kind_constants_are_in_buzz_custom_range` |
+| Envelope | PaymentApproval cannot be transported (no MessageKind, no envelope) | `test_approval_not_in_envelope` |
+| Envelope | MessageKind has no APPROVAL variant | `test_message_kind_has_no_approval` |
 | Adapter | Wavelength handles LIGHTNING | `test_wavelength_rail_is_lightning` |
 | Adapter | AmbiguousResult is AdapterError subclass | `test_ambiguous_result_is_adapter_error` |
 | Version | All messages share version `"1"` | `test_all_messages_share_version` |
@@ -404,6 +426,7 @@ The following invariants are validated by `tests/test_contract_invariants.py`:
 ## 10. File Layout
 
 ```
+pyproject.toml              # Pinned deps: pydantic, pytest
 src/hermes_payments/
 ├── __init__.py          # Package, version
 ├── models.py            # Domain schemas (PaymentIntent, etc.)
@@ -412,7 +435,7 @@ src/hermes_payments/
 └── adapter.py           # SettlementAdapter ABC + Wavelength stub
 
 tests/
-├── test_contract_invariants.py   # 34 invariant tests
+├── test_contract_invariants.py   # 39 invariant tests
 └── fixtures/
     └── __init__.py               # Deterministic test fixtures
 

@@ -1,12 +1,12 @@
 """
-Hermes Payments — contract invariant tests (v0).
+Hermes Payments — contract invariant tests (v1 correction pass).
 
 These tests validate the protocol contract without requiring live
 credentials or external services.  They cover:
 1. State machine correctness (transitions, terminal states, invariants)
 2. Idempotency / replay protection
 3. Canonical serialization determinism
-4. Envelope round-trip encoding
+4. Envelope round-trip encoding (approval excluded — local only)
 5. Adapter boundary constraints
 """
 
@@ -98,7 +98,7 @@ class TestStateMachine:
         """Every terminal state rejects all triggers."""
         triggers = ["submit", "quote_received", "prepared", "approved",
                      "executing", "settled", "cancel", "rejected",
-                     "expired", "adapter_error"]
+                     "expired", "adapter_error", "confirm_settled"]
         for state in TERMINAL_STATES:
             for trigger in triggers:
                 result = transition(state, trigger)
@@ -119,25 +119,55 @@ class TestStateMachine:
         assert not result.ok
 
     def test_expiry_from_non_terminal(self):
-        """All non-terminal states transition to EXPIRED on expiry."""
+        """All non-terminal states transition to EXPIRED on expiry, except EXECUTING."""
         non_terminal = reachable_states() - TERMINAL_STATES
         for state in non_terminal:
             if state == PaymentState.DRAFT:
                 continue  # DRAFT has no expiry trigger defined
+            if state == PaymentState.RECONCILIATION_REQUIRED:
+                continue  # RECONCILIATION_REQUIRED has no expiry trigger
             result = transition(state, "expired")
-            # Some states may not have expiry defined — that's OK
-            # but the key ones should
             if can_transition(state, "expired"):
-                assert result.new_state == PaymentState.EXPIRED
+                if state == PaymentState.EXECUTING:
+                    assert result.new_state == PaymentState.RECONCILIATION_REQUIRED
+                else:
+                    assert result.new_state == PaymentState.EXPIRED
 
-    def test_adapter_error_from_active(self):
-        """Adapter errors from QUOTED/PREPARED/APPROVED/EXECUTING → FAILED."""
+    def test_adapter_error_from_pre_execution(self):
+        """Adapter errors from QUOTED/PREPARED/APPROVED → FAILED."""
         error_states = [PaymentState.QUOTED, PaymentState.PREPARED,
-                        PaymentState.APPROVED, PaymentState.EXECUTING]
+                        PaymentState.APPROVED]
         for state in error_states:
             result = transition(state, "adapter_error")
             assert result.ok
             assert result.new_state == PaymentState.FAILED
+
+    def test_adapter_error_from_executing_goes_to_reconciliation(self):
+        """Adapter errors from EXECUTING → RECONCILIATION_REQUIRED (not FAILED)."""
+        result = transition(PaymentState.EXECUTING, "adapter_error")
+        assert result.ok
+        assert result.new_state == PaymentState.RECONCILIATION_REQUIRED
+
+    def test_expiry_from_executing_goes_to_reconciliation(self):
+        """Expiry from EXECUTING → RECONCILIATION_REQUIRED (not EXPIRED)."""
+        result = transition(PaymentState.EXECUTING, "expired")
+        assert result.ok
+        assert result.new_state == PaymentState.RECONCILIATION_REQUIRED
+
+    def test_reconciliation_not_terminal(self):
+        """RECONCILIATION_REQUIRED is not terminal — allows confirm_settled."""
+        assert PaymentState.RECONCILIATION_REQUIRED not in TERMINAL_STATES
+        result = transition(PaymentState.RECONCILIATION_REQUIRED, "confirm_settled")
+        assert result.ok
+        assert result.new_state == PaymentState.SETTLED
+
+    def test_reconciliation_rejects_other_triggers(self):
+        """RECONCILIATION_REQUIRED only allows confirm_settled."""
+        for trigger in ["submit", "cancel", "rejected", "expired",
+                         "adapter_error", "executing", "settled",
+                         "quote_received", "prepared", "approved"]:
+            result = transition(PaymentState.RECONCILIATION_REQUIRED, trigger)
+            assert not result.ok, f"RECONCILIATION_REQUIRED accepted trigger '{trigger}'"
 
     def test_approval_requires_prepare(self):
         """APPROVED can only be reached from PREPARED."""
@@ -159,6 +189,9 @@ class TestStateMachine:
             (PaymentState.PREPARED, "approved"): PaymentState.APPROVED,
             (PaymentState.APPROVED, "executing"): PaymentState.EXECUTING,
             (PaymentState.EXECUTING, "settled"): PaymentState.SETTLED,
+            (PaymentState.EXECUTING, "expired"): PaymentState.RECONCILIATION_REQUIRED,
+            (PaymentState.EXECUTING, "adapter_error"): PaymentState.RECONCILIATION_REQUIRED,
+            (PaymentState.RECONCILIATION_REQUIRED, "confirm_settled"): PaymentState.SETTLED,
         }
         for (state, trigger), expected in expected_transitions.items():
             result = transition(state, trigger)
@@ -280,7 +313,7 @@ class TestSerialization:
 
 
 # ===========================================================================
-# 4. Envelope round-trip
+# 4. Envelope round-trip (approval excluded — local only)
 # ===========================================================================
 
 
@@ -315,21 +348,6 @@ class TestEnvelope:
         decoded = envelope_to_payment(env)
         assert isinstance(decoded, PaymentQuote)
         assert decoded.intent_id == intent.id
-
-    def test_approval_round_trip(self):
-        """PaymentApproval → BuzzEnvelope → PaymentApproval preserves data."""
-        intent = make_intent()
-        quote = make_quote(intent)
-        approval = make_approval(intent, quote)
-        env = payment_to_envelope(
-            approval,
-            author_pubkey=APPROVER_PUBKEY,
-            event_id="ev-003",
-            event_sig="cc" * 64,
-        )
-        decoded = envelope_to_payment(env)
-        assert isinstance(decoded, PaymentApproval)
-        assert decoded.prepared_hash == approval.prepared_hash
 
     def test_receipt_round_trip(self):
         """PaymentReceipt → BuzzEnvelope → PaymentReceipt preserves data."""
@@ -379,6 +397,29 @@ class TestEnvelope:
         """Payment event kinds must be in Buzz's 40000-49999 custom range."""
         for kind in KIND_MAP.values():
             assert 40000 <= kind <= 49999
+
+    def test_approval_not_in_envelope(self):
+        """PaymentApproval cannot be serialized into a BuzzEnvelope.
+
+        Approval is strictly local authorisation — it never enters
+        the transport layer.
+        """
+        intent = make_intent()
+        quote = make_quote(intent)
+        approval = make_approval(intent, quote)
+
+        # PaymentApproval is NOT in PaymentMessage union — should not be
+        # serializable through payment_to_envelope.
+        # Even if someone tries to pass it directly, _kind_for_model
+        # will raise KeyError because PaymentApproval is not in the mapping.
+        from hermes_payments.envelope import _kind_for_model
+        with pytest.raises(KeyError):
+            _kind_for_model(approval)
+
+    def test_message_kind_has_no_approval(self):
+        """MessageKind enum does not include APPROVAL."""
+        kind_names = [k.name for k in MessageKind]
+        assert "APPROVAL" not in kind_names
 
 
 # ===========================================================================

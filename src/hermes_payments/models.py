@@ -34,11 +34,13 @@ PROTOCOL_VERSION: Literal["1"] = "1"
 
 
 class MessageKind(str, Enum):
-    """Discriminator for the domain message inside a Buzz envelope."""
+    """Discriminator for the domain message inside a Buzz envelope.
 
+    NOTE: PaymentApproval is NOT a transport message — it is strictly
+    local human authorisation and never enters a Buzz envelope.
+    """
     INTENT = "payment_intent"
     QUOTE = "payment_quote"
-    APPROVAL = "payment_approval"
     RECEIPT = "payment_receipt"
 
 
@@ -56,6 +58,7 @@ class PaymentState(str, Enum):
     REJECTED = "rejected"
     EXPIRED = "expired"
     CANCELLED = "cancelled"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
 
 
 class Rail(str, Enum):
@@ -184,7 +187,7 @@ class PaymentReceipt(BaseModel):
 # Union type for envelope dispatch
 # ---------------------------------------------------------------------------
 
-PaymentMessage = Union[PaymentIntent, PaymentQuote, PaymentApproval, PaymentReceipt]
+PaymentMessage = Union[PaymentIntent, PaymentQuote, PaymentReceipt]
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,6 @@ from pydantic import BaseModel, Field
 
 from .models import (
     MessageKind,
-    PaymentApproval,
     PaymentIntent,
     PaymentMessage,
     PaymentQuote,
@@ -41,13 +40,12 @@ from .models import (
 
 KIND_PAYMENT_INTENT: int = 40100
 KIND_PAYMENT_QUOTE: int = 40101
-KIND_PAYMENT_APPROVAL: int = 40102
+# PaymentApproval is strictly local authorisation — no Buzz kind.
 KIND_PAYMENT_RECEIPT: int = 40103
 
 KIND_MAP: Dict[MessageKind, int] = {
     MessageKind.INTENT: KIND_PAYMENT_INTENT,
     MessageKind.QUOTE: KIND_PAYMENT_QUOTE,
-    MessageKind.APPROVAL: KIND_PAYMENT_APPROVAL,
     MessageKind.RECEIPT: KIND_PAYMENT_RECEIPT,
 }
 
@@ -56,7 +54,6 @@ REVERSE_KIND_MAP: Dict[int, MessageKind] = {v: k for k, v in KIND_MAP.items()}
 MODEL_MAP: Dict[MessageKind, Type[PaymentMessage]] = {
     MessageKind.INTENT: PaymentIntent,
     MessageKind.QUOTE: PaymentQuote,
-    MessageKind.APPROVAL: PaymentApproval,
     MessageKind.RECEIPT: PaymentReceipt,
 }
 
@@ -128,7 +125,6 @@ def _kind_for_model(message: PaymentMessage) -> MessageKind:
     mapping = {
         "PaymentIntent": MessageKind.INTENT,
         "PaymentQuote": MessageKind.QUOTE,
-        "PaymentApproval": MessageKind.APPROVAL,
         "PaymentReceipt": MessageKind.RECEIPT,
     }
     return mapping[class_name]
@@ -155,10 +151,12 @@ def _build_tags(message: PaymentMessage) -> List[List[str]]:
     elif isinstance(message, PaymentQuote):
         tags.append(["intent", message.intent_id])
         tags.append(["quote", message.quote_id])
-        tags.append(["p", message.recipient.pubkey])
-    elif isinstance(message, PaymentApproval):
-        tags.append(["intent", message.intent_id])
-        tags.append(["quote", message.quote_id])
+        # NOTE: The quote is sent FROM recipient TO sender.  The "p" tag
+        # should address the sender (the quote's intended recipient on the
+        # wire).  PaymentQuote.model does not carry sender — that is resolved
+        # from the referenced PaymentIntent.  The Buzz transport adapter
+        # (Gate 3) will set the correct "p" tag at envelope construction.
+        tags.append(["p", message.recipient.pubkey])  # placeholder — see Gate 3
     elif isinstance(message, PaymentReceipt):
         tags.append(["intent", message.intent_id])
         tags.append(["settlement", message.settlement_ref])

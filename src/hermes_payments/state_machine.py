@@ -5,9 +5,14 @@ Finite automaton for a single PaymentIntent lifecycle.
 
     DRAFT → SUBMITTED → QUOTED → PREPARED → APPROVED → EXECUTING → SETTLED
                                  ↓           ↓          ↓
-                             CANCELLED   REJECTED    EXPIRED / FAILED
-                   ↓
-               REJECTED / EXPIRED / FAILED
+                             CANCELLED   REJECTED    RECONCILIATION_REQUIRED
+                   ↓                       (timeout/ambiguous during execution
+               REJECTED / EXPIRED / FAILED   → manual verify only)
+
+EXECUTING is NEVER terminally marked as EXPIRED or FAILED.
+Timeout or ambiguous adapter results during execution transition to
+RECONCILIATION_REQUIRED — a non-terminal state that requires manual
+human verification (confirm_settled) before settling.
 
 Every transition is deterministic given an input event.  The state
 machine is the single source of truth for whether an adapter call
@@ -50,18 +55,21 @@ TRANSITIONS: Dict[Tuple[PaymentState, str], PaymentState] = {
     (PaymentState.PREPARED, "rejected"): PaymentState.REJECTED,
     (PaymentState.APPROVED, "rejected"): PaymentState.REJECTED,
 
-    # Expiry (any non-terminal state → EXPIRED)
+    # Expiry (active states before execution → EXPIRED; execution → reconciliation)
     (PaymentState.SUBMITTED, "expired"): PaymentState.EXPIRED,
     (PaymentState.QUOTED, "expired"): PaymentState.EXPIRED,
     (PaymentState.PREPARED, "expired"): PaymentState.EXPIRED,
     (PaymentState.APPROVED, "expired"): PaymentState.EXPIRED,
-    (PaymentState.EXECUTING, "expired"): PaymentState.EXPIRED,
+    (PaymentState.EXECUTING, "expired"): PaymentState.RECONCILIATION_REQUIRED,
 
-    # Adapter failure (any active state → FAILED)
+    # Adapter failure (pre-execution → FAILED; execution → reconciliation)
     (PaymentState.QUOTED, "adapter_error"): PaymentState.FAILED,
     (PaymentState.PREPARED, "adapter_error"): PaymentState.FAILED,
     (PaymentState.APPROVED, "adapter_error"): PaymentState.FAILED,
-    (PaymentState.EXECUTING, "adapter_error"): PaymentState.FAILED,
+    (PaymentState.EXECUTING, "adapter_error"): PaymentState.RECONCILIATION_REQUIRED,
+
+    # Manual reconciliation: human verifies settlement actually happened
+    (PaymentState.RECONCILIATION_REQUIRED, "confirm_settled"): PaymentState.SETTLED,
 }
 
 
@@ -85,9 +93,10 @@ TERMINAL_STATES: FrozenSet[PaymentState] = frozenset({
 INVARIANT_DESCRIPTIONS = {
     "no_double_settle": "Once SETTLED, no further transition is possible.",
     "no_replay_approval": "Each (intent_id, quote_id, prepared_hash) tuple may be approved at most once.",
-    "expiry_guard": "Any non-terminal state transitions to EXPIRED when expires_at is reached.",
-    "adapter_boundary": "Adapter errors are the only non-human transition into FAILED from EXECUTING.",
+    "expiry_guard": "Any non-terminal state transitions to EXPIRED when expires_at is reached (except EXECUTING → RECONCILIATION_REQUIRED).",
+    "adapter_boundary": "Adapter errors from EXECUTING transition to RECONCILIATION_REQUIRED, not FAILED.",
     "approval_requires_prepared": "APPROVED can only be reached from PREPARED (prepare must have run).",
+    "executing_no_terminal_error": "EXECUTING is never terminally marked as EXPIRED or FAILED — ambiguous results require manual reconciliation.",
 }
 
 

@@ -151,7 +151,8 @@ class AmbiguousResult(AdapterError):
     """Raised when the adapter cannot determine the outcome.
 
     The caller MUST NOT retry.  The state machine transitions to
-    EXPIRED (ambiguous) and the human must investigate manually.
+    RECONCILIATION_REQUIRED and the human must investigate manually
+    to verify whether settlement occurred.
     """
 
     def __init__(self, message: str = "ambiguous settlement result"):
@@ -167,10 +168,8 @@ class WavelengthAdapter(SettlementAdapter):
     """First settlement adapter: Wavelength Lightning (regtest-only).
 
     Maps the generic prepare/execute/verify interface to Wavelength's
-    MCP tool surface:
-    - prepare → send.prepare (dry run)
-    - execute → send (with yes: true)
-    - verify → activity + balance
+    MCP tool surface.  The specific wavecli command mapping is DEFERRED
+    to Gate 4, which will verify flags/tools against a live daemon.
 
     Credentials (TLS, macaroons) stay local and are NEVER passed
     through Buzz events or the adapter boundary.
@@ -190,20 +189,13 @@ class WavelengthAdapter(SettlementAdapter):
         amount_sat: int,
         max_fee_sat: int,
     ) -> PrepareResult:
-        """
-        Wavelength adapter mapping:
-          receive_instruction.invoice → wavecli send.prepare --invoice <bolt11>
-          result.fee_sat → fee from dry-run
-          result.prepared_hash → sha256 of the prepare response payload
+        """Non-mutating dry-run.
 
-        Implementation note: the actual MCP call goes through
-        ``wavecli --no-tls --no-macaroons --network=regtest send.prepare``.
-        This is the adapter boundary — the protocol layer never calls
-        Wavelength directly.
+        Wavecli command mapping DEFERRED to Gate 4 (needs live daemon verification).
         """
         raise NotImplementedError(
             "WavelengthAdapter.prepare() requires a live Wavelength daemon. "
-            "This stub defines the interface; implementation follows in Gate 4."
+            "Command mapping deferred to Gate 4."
         )
 
     def execute(
@@ -211,13 +203,13 @@ class WavelengthAdapter(SettlementAdapter):
         prepared_payload: bytes,
         prepared_hash: str,
     ) -> ExecuteResult:
-        """
-        Wavelength adapter mapping:
-          prepared_payload → wavecli send --yes (with pre-computed params)
-          result.settlement_ref → payment_hash from Wavelength response
+        """Execute the settlement.
+
+        Wavecli command mapping DEFERRED to Gate 4 (needs live daemon verification).
         """
         raise NotImplementedError(
-            "WavelengthAdapter.execute() requires a live Wavelength daemon."
+            "WavelengthAdapter.execute() requires a live Wavelength daemon. "
+            "Command mapping deferred to Gate 4."
         )
 
     def verify_receipt(
@@ -225,11 +217,11 @@ class WavelengthAdapter(SettlementAdapter):
         settlement_ref: str,
         expected_amount_sat: int,
     ) -> ReceiptVerifyResult:
-        """
-        Wavelength adapter mapping:
-          settlement_ref → wavecli activity (look for payment_hash match)
-          expected_amount_sat → compare against activity entry
+        """Verify a receipt against the rail.
+
+        Wavecli command mapping DEFERRED to Gate 4 (needs live daemon verification).
         """
         raise NotImplementedError(
-            "WavelengthAdapter.verify_receipt() requires a live Wavelength daemon."
+            "WavelengthAdapter.verify_receipt() requires a live Wavelength daemon. "
+            "Command mapping deferred to Gate 4."
         )
