@@ -126,11 +126,15 @@ def make_receipt(
     created_at: int = NOW,
     settled_at: int = NOW,
 ) -> PaymentReceipt:
-    """Create a PaymentReceipt confirming settlement."""
+    """Create a PaymentReceipt confirming settlement.
+
+    The receipt is authored by the recipient (event.pubkey == recipient.pubkey).
+    """
     receipt = PaymentReceipt(
         id="placeholder",
         intent_id=intent.id,
         quote_id=quote.quote_id,
+        recipient=RECIPIENT_IDENTITY,
         settlement_ref=settlement_ref,
         amount_sat=intent.amount_sat,
         fee_sat=fee_sat,

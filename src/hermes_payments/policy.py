@@ -603,6 +603,7 @@ class PaymentOrchestrator:
             id="placeholder",
             intent_id=rec.intent.id,
             quote_id=rec.quote.quote_id if rec.quote else "",
+            recipient=rec.intent.recipient,
             settlement_ref=exec_result.settlement_ref,
             amount_sat=rec.intent.amount_sat,
             fee_sat=exec_result.fee_sat,

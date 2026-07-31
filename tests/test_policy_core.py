@@ -1282,6 +1282,7 @@ class TestP2Regression:
             id="placeholder",
             intent_id=intent.id,
             quote_id=quote.quote_id,
+            recipient=intent.recipient,
             settlement_ref="ref-wrong",
             amount_sat=999999,  # doesn't match intent.amount_sat
             fee_sat=0,
@@ -1342,6 +1343,7 @@ class TestP2Regression:
             id="placeholder",
             intent_id=intent.id,
             quote_id=quote.quote_id,
+            recipient=intent.recipient,
             settlement_ref="ref-wrong",
             amount_sat=999999,
             fee_sat=0,
@@ -1397,6 +1399,7 @@ class TestP2Regression:
             id="placeholder",
             intent_id=intent.id,
             quote_id=quote.quote_id,
+            recipient=intent.recipient,
             settlement_ref="ref-wrong",
             amount_sat=999999,
             fee_sat=0,

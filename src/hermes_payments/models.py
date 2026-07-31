@@ -166,15 +166,17 @@ class PaymentApproval(BaseModel):
 class PaymentReceipt(BaseModel):
     """Settlement confirmation.
 
-    The receipt is produced after adapter.execute() returns success.
-    It links back to the intent and includes the settlement reference
-    for independent verification.
+    The receipt is produced by the recipient after settlement.
+    On the wire it is authored by the recipient (event.pubkey == recipient.pubkey).
+    Locally, the sender's orchestrator may also create a receipt from the
+    adapter result — in that case ``recipient`` is copied from the intent.
     """
 
     protocol_version: Literal["1"] = Field(default=PROTOCOL_VERSION)
     id: str = Field(..., description="Deterministic ID: sha256 of canonical fields")
     intent_id: str = Field(..., description="References PaymentIntent.id")
     quote_id: str = Field(..., description="References PaymentQuote.quote_id")
+    recipient: BuzzIdentity = Field(..., description="Recipient identity; receipt is authored by this party")
     settlement_ref: str = Field(..., description="Rail-specific settlement reference (e.g. payment_hash)")
     amount_sat: int = Field(..., gt=0, description="Settled amount in satoshis")
     fee_sat: int = Field(..., ge=0, description="Actual fee in satoshis")

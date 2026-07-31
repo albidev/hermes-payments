@@ -1,81 +1,124 @@
 """
-Hermes Payments — Buzz transport envelope mapping (v0).
+Hermes Payments — wire format codec (v2: kind-9 envelope).
 
-Defines how domain messages map to/from signed Buzz/Nostr events.
+All payment messages travel as NIP-29 channel messages (kind 9).
+The ``content`` field carries an explicit versioned JSON envelope:
 
-Envelope design:
-- Each PaymentMessage is serialised as JSON ``content`` inside a
-  Nostr event.
-- ``kind`` selects the message type (see ``KIND_MAP``).
-- ``tags`` carry protocol-relevant metadata (intent-id, quote-id, etc.)
-  without duplicating the content.
-- ``id``, ``pubkey``, and ``sig`` are Buzz-native fields; we do NOT
-  produce signatures (Buzz does that) — we only define the shape.
+    {
+      "protocol": "hermes-payments",
+      "version": "1",
+      "type": "<payment_intent|payment_quote|payment_receipt>",
+      "payload": { <domain model fields> }
+    }
+
+``h`` tags (channel UUID) are managed by Buzz — we do NOT add them
+manually; ``buzz messages send --channel <UUID>`` adds the ``h`` tag
+automatically.
+
+``id``, ``pubkey``, and ``sig`` are Buzz-native fields; we do NOT
+produce signatures (Buzz does that).
 
 This module is the adapter boundary between protocol domain and transport.
 """
-
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Literal, Optional, Type, Union
 
 from pydantic import BaseModel, Field
 
 from .models import (
     MessageKind,
-    PaymentIntent,
+    PaymentApproval,
     PaymentMessage,
-    PaymentQuote,
     PaymentReceipt,
 )
 
+# ---------------------------------------------------------------------------
+# Wire constants
+# ---------------------------------------------------------------------------
+
+WIRE_KIND: int = 9
+"""NIP-29 channel message kind — all payment messages use this."""
+
+PROTOCOL_ID: str = "hermes-payments"
+"""Protocol identifier embedded in the envelope."""
+
+PROTOCOL_VERSION: str = "1"
+"""Envelope protocol version (independent of domain model protocol_version)."""
+
 
 # ---------------------------------------------------------------------------
-# Buzz custom kinds for payments (reserved range 40000–49999)
+# Message-type discriminator maps
 # ---------------------------------------------------------------------------
 
-# These are the Nostr ``kind`` integers used in Buzz events.
-# They live in the Buzz custom-kinds range and must NOT collide with
-# existing Buzz kinds.
+# Lazy import to avoid circular imports at module level
+_MODEL_MAP: Optional[Dict[str, Type[PaymentMessage]]] = None
 
-KIND_PAYMENT_INTENT: int = 40100
-KIND_PAYMENT_QUOTE: int = 40101
-# PaymentApproval is strictly local authorisation — no Buzz kind.
-KIND_PAYMENT_RECEIPT: int = 40103
 
+def _get_model_map() -> Dict[str, Type[PaymentMessage]]:
+    """Lazy-loaded map from envelope type string to domain model class."""
+    global _MODEL_MAP
+    if _MODEL_MAP is None:
+        from .models import PaymentIntent, PaymentQuote, PaymentReceipt as PR
+
+        _MODEL_MAP = {
+            MessageKind.INTENT.value: PaymentIntent,
+            MessageKind.QUOTE.value: PaymentQuote,
+            MessageKind.RECEIPT.value: PR,
+        }
+    return _MODEL_MAP
+
+
+# Backward-compat: KIND_MAP now maps every payment type to kind 9.
 KIND_MAP: Dict[MessageKind, int] = {
-    MessageKind.INTENT: KIND_PAYMENT_INTENT,
-    MessageKind.QUOTE: KIND_PAYMENT_QUOTE,
-    MessageKind.RECEIPT: KIND_PAYMENT_RECEIPT,
+    MessageKind.INTENT: WIRE_KIND,
+    MessageKind.QUOTE: WIRE_KIND,
+    MessageKind.RECEIPT: WIRE_KIND,
 }
 
-REVERSE_KIND_MAP: Dict[int, MessageKind] = {v: k for k, v in KIND_MAP.items()}
+REVERSE_KIND_MAP: Dict[int, MessageKind] = {
+    WIRE_KIND: MessageKind.INTENT,  # ambiguous on kind alone; envelope type discriminates
+}
 
 MODEL_MAP: Dict[MessageKind, Type[PaymentMessage]] = {
-    MessageKind.INTENT: PaymentIntent,
-    MessageKind.QUOTE: PaymentQuote,
-    MessageKind.RECEIPT: PaymentReceipt,
+    MessageKind.INTENT: None,  # type: ignore[assignment]  # filled lazily
+    MessageKind.QUOTE: None,  # type: ignore[assignment]
+    MessageKind.RECEIPT: None,  # type: ignore[assignment]
 }
 
 
+def _init_model_map() -> None:
+    """Initialise MODEL_MAP from the lazy model map."""
+    global MODEL_MAP
+    mm = _get_model_map()
+    from .models import PaymentIntent, PaymentQuote
+
+    MODEL_MAP = {
+        MessageKind.INTENT: PaymentIntent,
+        MessageKind.QUOTE: PaymentQuote,
+        MessageKind.RECEIPT: PaymentReceipt,
+    }
+
+
 # ---------------------------------------------------------------------------
-# Envelope (Nostr event shape)
+# Payment envelope (the JSON content format)
 # ---------------------------------------------------------------------------
 
 
-class BuzzEnvelope(BaseModel):
-    """Nostr event envelope for a payment message.
+class PaymentEnvelope(BaseModel):
+    """Versioned JSON envelope carried inside the ``content`` field of a
+    NIP-29 kind-9 channel message.
 
-    This is the *wire shape* — what Buzz stores and distributes.
-    The ``content`` field carries the JSON-encoded domain message.
+    The ``type`` field discriminates which domain model the ``payload``
+    deserialises to.  The ``protocol`` and ``version`` fields allow
+    protocol evolution without kind-number proliferation.
     """
 
-    id: str = Field(..., description="Nostr event ID (sha256 of serialised event)")
-    pubkey: str = Field(..., min_length=64, max_length=64, description="Author's Schnorr pubkey, hex")
-    kind: int = Field(..., description="Nostr event kind (40100–40103)")
-    tags: List[List[str]] = Field(default_factory=list, description="Nostr tags")
-    content: str = Field(..., description="JSON-encoded PaymentMessage")
-    sig: str = Field(..., min_length=128, max_length=128, description="Schnorr sig over id")
+    protocol: Literal["hermes-payments"] = Field(default="hermes-payments")
+    version: Literal["1"] = Field(default="1")
+    type: MessageKind = Field(..., description="Discriminator for the payload model")
+    payload: Dict[str, Any] = Field(..., description="Domain model fields")
 
 
 # ---------------------------------------------------------------------------
@@ -83,40 +126,68 @@ class BuzzEnvelope(BaseModel):
 # ---------------------------------------------------------------------------
 
 
-def payment_to_envelope(
-    message: PaymentMessage,
-    *,
-    author_pubkey: str,
-    event_id: str,
-    event_sig: str,
-) -> BuzzEnvelope:
-    """Encode a domain message into a Buzz envelope.
+def encode_content(message: PaymentMessage) -> str:
+    """Encode a domain message as a ``PaymentEnvelope`` JSON string.
 
-    The caller (Buzz transport adapter) provides ``author_pubkey``,
-    ``event_id``, and ``event_sig`` — we do not sign; Buzz does.
+    PaymentApproval is NEVER encodable — raises ``TypeError`` at runtime.
     """
+    if isinstance(message, PaymentApproval):
+        raise TypeError(
+            "PaymentApproval must never be serialized or transmitted; "
+            "it is strictly local human authorisation"
+        )
     msg_kind = _kind_for_model(message)
-    return BuzzEnvelope(
-        id=event_id,
-        pubkey=author_pubkey,
-        kind=KIND_MAP[msg_kind],
-        tags=_build_tags(message),
-        content=message.model_dump_json(exclude_none=True),
-        sig=event_sig,
+    envelope = PaymentEnvelope(
+        type=msg_kind,
+        payload=message.model_dump(exclude_none=True, mode="python"),
     )
+    return envelope.model_dump_json(exclude_none=True)
 
 
-def envelope_to_payment(env: BuzzEnvelope) -> PaymentMessage:
-    """Decode a Buzz envelope back into a domain message.
+def decode_content(content: str) -> PaymentMessage:
+    """Decode a ``PaymentEnvelope`` JSON string into a domain message.
 
-    Raises ``ValueError`` if the kind is not a payment kind or the
-    content does not match the expected model.
+    Validates protocol, version, and schema.  Raises ``ValueError`` on
+    any validation failure.
     """
-    msg_kind = REVERSE_KIND_MAP.get(env.kind)
-    if msg_kind is None:
-        raise ValueError(f"kind {env.kind} is not a payment kind")
-    model_cls = MODEL_MAP[msg_kind]
-    return model_cls.model_validate_json(env.content)
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"content is not valid JSON: {e}") from e
+
+    if not isinstance(data, dict):
+        raise ValueError("content JSON is not an object")
+
+    # Validate protocol envelope
+    protocol = data.get("protocol")
+    if protocol != PROTOCOL_ID:
+        raise ValueError(
+            f"unknown protocol {protocol!r}; expected {PROTOCOL_ID!r}"
+        )
+
+    version = data.get("version")
+    if version != PROTOCOL_VERSION:
+        raise ValueError(
+            f"unsupported protocol version {version!r}; expected {PROTOCOL_VERSION!r}"
+        )
+
+    type_str = data.get("type")
+    if type_str is None:
+        raise ValueError("envelope missing 'type' field")
+
+    model_map = _get_model_map()
+    model_cls = model_map.get(type_str)
+    if model_cls is None:
+        raise ValueError(f"unknown envelope type {type_str!r}")
+
+    payload = data.get("payload")
+    if payload is None or not isinstance(payload, dict):
+        raise ValueError("envelope missing or invalid 'payload' field")
+
+    try:
+        return model_cls.model_validate(payload)
+    except Exception as e:
+        raise ValueError(f"payload validation failed for type {type_str!r}: {e}") from e
 
 
 def _kind_for_model(message: PaymentMessage) -> MessageKind:
@@ -127,39 +198,83 @@ def _kind_for_model(message: PaymentMessage) -> MessageKind:
         "PaymentQuote": MessageKind.QUOTE,
         "PaymentReceipt": MessageKind.RECEIPT,
     }
-    return mapping[class_name]
+    result = mapping.get(class_name)
+    if result is None:
+        raise TypeError(f"{class_name} is not a transportable payment message")
+    return result
 
 
 # ---------------------------------------------------------------------------
-# Tag conventions
+# Backward-compat: BuzzEnvelope (Nostr event shape for tests)
 # ---------------------------------------------------------------------------
+
+
+class BuzzEnvelope(BaseModel):
+    """Nostr event envelope for a payment message.
+
+    Updated to use kind 9 (NIP-29 channel message) instead of custom kinds.
+    The ``content`` field carries a ``PaymentEnvelope`` JSON string.
+    """
+
+    id: str = Field(..., description="Nostr event ID (sha256 of serialised event)")
+    pubkey: str = Field(..., min_length=64, max_length=64, description="Author's Schnorr pubkey, hex")
+    kind: int = Field(default=WIRE_KIND, description="Nostr event kind (always 9 for payments)")
+    tags: List[List[str]] = Field(default_factory=list, description="Nostr tags")
+    content: str = Field(..., description="PaymentEnvelope JSON string")
+    sig: str = Field(..., min_length=128, max_length=128, description="Schnorr sig over id")
+
+
+def payment_to_envelope(
+    message: PaymentMessage,
+    *,
+    author_pubkey: str,
+    event_id: str,
+    event_sig: str,
+) -> BuzzEnvelope:
+    """Encode a domain message into a BuzzEnvelope (kind 9).
+
+    The caller (Buzz transport adapter) provides ``author_pubkey``,
+    ``event_id``, and ``event_sig`` — we do not sign; Buzz does.
+    """
+    return BuzzEnvelope(
+        id=event_id,
+        pubkey=author_pubkey,
+        kind=WIRE_KIND,
+        tags=_build_tags(message),
+        content=encode_content(message),
+        sig=event_sig,
+    )
+
+
+def envelope_to_payment(env: BuzzEnvelope) -> PaymentMessage:
+    """Decode a BuzzEnvelope back into a domain message.
+
+    Raises ``ValueError`` if the kind is not 9 or the content does not
+    match the expected model.
+    """
+    if env.kind != WIRE_KIND:
+        raise ValueError(f"kind {env.kind} is not a payment kind; expected {WIRE_KIND}")
+    return decode_content(env.content)
+
+
+# ---------------------------------------------------------------------------
+# Tag conventions (metadata tags only — h-tag is added by Buzz)
+# ---------------------------------------------------------------------------
+
 
 def _build_tags(message: PaymentMessage) -> List[List[str]]:
-    """Build Nostr tags for a payment message.
+    """Build Nostr metadata tags for a payment message.
 
-    Tags provide indexed metadata for Buzz filtering/subscription
-    without parsing content.
+    These are informational tags added to the content envelope.
+    The ``h`` tag (channel UUID) is added automatically by Buzz when
+    using ``buzz messages send --channel <UUID>``.
     """
     tags: List[List[str]] = [
-        ["h", "hermes-payments"],          # community tag
-        ["protocol", "hermes-payments-v1"], # protocol identifier
+        ["protocol", "hermes-payments-v1"],
     ]
 
-    if isinstance(message, PaymentIntent):
-        tags.append(["intent", message.id])
-        tags.append(["p", message.recipient.pubkey])
-    elif isinstance(message, PaymentQuote):
-        tags.append(["intent", message.intent_id])
-        tags.append(["quote", message.quote_id])
-        # NOTE: The quote is sent FROM recipient TO sender.  The "p" tag
-        # should address the sender (the quote's intended recipient on the
-        # wire).  PaymentQuote.model does not carry sender — that is resolved
-        # from the referenced PaymentIntent.  The Buzz transport adapter
-        # (Gate 3) will set the correct "p" tag at envelope construction.
-        tags.append(["p", message.recipient.pubkey])  # placeholder — see Gate 3
-    elif isinstance(message, PaymentReceipt):
-        tags.append(["intent", message.intent_id])
-        tags.append(["settlement", message.settlement_ref])
+    if hasattr(message, "id"):
+        tags.append(["intent", getattr(message, "intent_id", message.id)])
 
     return tags
 

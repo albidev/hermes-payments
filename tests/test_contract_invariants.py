@@ -323,7 +323,7 @@ class TestSerialization:
 
 
 class TestEnvelope:
-    """Buzz envelope encoding/decoding."""
+    """Buzz envelope encoding/decoding (v2: kind-9 envelope)."""
 
     def test_intent_round_trip(self):
         """PaymentIntent → BuzzEnvelope → PaymentIntent preserves data."""
@@ -368,21 +368,23 @@ class TestEnvelope:
         decoded = envelope_to_payment(env)
         assert isinstance(decoded, PaymentReceipt)
         assert decoded.settlement_ref == receipt.settlement_ref
+        assert decoded.recipient.pubkey == RECIPIENT_PUBKEY
 
-    def test_non_payment_kind_rejected(self):
-        """Envelope with non-payment kind raises ValueError."""
+    def test_non_nine_kind_rejected(self):
+        """Envelope with kind != 9 raises ValueError."""
         env = BuzzEnvelope(
             id="ev-999",
             pubkey=SENDER_PUBKEY,
-            kind=1,  # standard Nostr text note
+            kind=1,  # not kind 9
             content="hello",
             sig="aa" * 64,
         )
         with pytest.raises(ValueError, match="not a payment kind"):
             envelope_to_payment(env)
 
-    def test_envelope_tags_contain_intent(self):
-        """Intent envelope tags include the intent ID and community tag."""
+    def test_envelope_tags_contain_protocol(self):
+        """Intent envelope tags include protocol identifier."""
+        from hermes_payments.envelope import WIRE_KIND
         intent = make_intent()
         env = payment_to_envelope(
             intent,
@@ -390,18 +392,15 @@ class TestEnvelope:
             event_id="ev-010",
             event_sig="aa" * 64,
         )
-        # Tags are list-of-lists: [["h", "hermes-payments"], ["protocol", ...], ["intent", ...], ...]
+        assert env.kind == WIRE_KIND
         tag_keys = [t[0] for t in env.tags]
-        assert "intent" in tag_keys
-        assert "h" in tag_keys  # community tag
-        # Check the community tag value
-        community_tags = [t for t in env.tags if t[0] == "h"]
-        assert community_tags[0][1] == "hermes-payments"
+        assert "protocol" in tag_keys
 
-    def test_kind_constants_are_in_buzz_custom_range(self):
-        """Payment event kinds must be in Buzz's 40000-49999 custom range."""
+    def test_all_payment_kinds_are_nine(self):
+        """All payment message kinds use NIP-29 kind 9."""
+        from hermes_payments.envelope import KIND_MAP
         for kind in KIND_MAP.values():
-            assert 40000 <= kind <= 49999
+            assert kind == 9
 
     def test_approval_not_in_envelope(self):
         """PaymentApproval cannot be serialized into a BuzzEnvelope.
@@ -415,10 +414,8 @@ class TestEnvelope:
 
         # PaymentApproval is NOT in PaymentMessage union — should not be
         # serializable through payment_to_envelope.
-        # Even if someone tries to pass it directly, _kind_for_model
-        # will raise KeyError because PaymentApproval is not in the mapping.
         from hermes_payments.envelope import _kind_for_model
-        with pytest.raises(KeyError):
+        with pytest.raises(TypeError):
             _kind_for_model(approval)
 
     def test_message_kind_has_no_approval(self):
@@ -493,3 +490,215 @@ class TestProtocolVersion:
         j = i.model_copy(update={"protocol_version": "99"})
         j.id = compute_id(j)
         assert i.id != j.id
+
+
+# ===========================================================================
+# 7. P3 transport boundary invariants (kind-9 envelope)
+# ===========================================================================
+
+
+class TestP3TransportBoundary:
+    """P3 transport boundary invariants.
+
+    These tests enforce the non-negotiable safety properties of the
+    transport layer without requiring live Buzz CLI or network.
+    """
+
+    # -- (1) PaymentApproval must never be serializable/transmittable --
+
+    def test_approval_not_in_payment_message_union(self):
+        """PaymentApproval is not part of the PaymentMessage union type."""
+        from hermes_payments.models import PaymentMessage
+        assert PaymentApproval not in PaymentMessage.__args__
+
+    def test_approval_not_in_kind_map(self):
+        """PaymentApproval has no Nostr kind assigned."""
+        from hermes_payments.envelope import KIND_MAP
+        kind_names = [k.value for k in KIND_MAP.keys()]
+        assert "approval" not in kind_names
+
+    def test_approval_encode_raises(self):
+        """encode_content() must reject PaymentApproval at runtime."""
+        from hermes_payments.transport import encode_content
+        approval = make_approval(make_intent(), make_quote(make_intent()))
+        with pytest.raises(TypeError, match="PaymentApproval must never"):
+            encode_content(approval)
+
+    def test_message_kind_enum_has_no_approval(self):
+        """MessageKind enum has exactly 3 members: INTENT, QUOTE, RECEIPT."""
+        assert len(MessageKind) == 3
+        names = [k.name for k in MessageKind]
+        assert "APPROVAL" not in names
+        assert set(names) == {"INTENT", "QUOTE", "RECEIPT"}
+
+    # -- (2) No private key in transport layer --
+
+    def test_transport_no_key_attribute(self):
+        """BuzzTransport has no private key attribute."""
+        from hermes_payments.transport import BuzzTransport, FakeExecutor
+        transport = BuzzTransport(FakeExecutor(), channel="test-uuid")
+        for attr in ["_private_key", "_keys", "_secret", "_sk"]:
+            assert not hasattr(transport, attr)
+
+    def test_fake_executor_no_key_attribute(self):
+        """FakeExecutor has no private key attribute."""
+        from hermes_payments.transport import FakeExecutor
+        ex = FakeExecutor()
+        for attr in ["_private_key", "_keys", "_secret", "_sk"]:
+            assert not hasattr(ex, attr)
+
+    # -- (3) Wire kind is NIP-29 kind 9 --
+
+    def test_wire_kind_is_nine(self):
+        """All payment messages use NIP-29 kind 9."""
+        from hermes_payments.envelope import WIRE_KIND
+        assert WIRE_KIND == 9
+
+    def test_kind_map_all_nine(self):
+        """Every payment type maps to kind 9."""
+        from hermes_payments.envelope import KIND_MAP
+        for kind in KIND_MAP.values():
+            assert kind == 9
+
+    # -- (4) Envelope has protocol + version --
+
+    def test_envelope_has_protocol_and_version(self):
+        """PaymentEnvelope carries protocol identifier and version."""
+        from hermes_payments.envelope import decode_content, encode_content
+        from hermes_payments.envelope import PROTOCOL_ID, PROTOCOL_VERSION
+        import json
+        intent = make_intent()
+        content = encode_content(intent)
+        data = json.loads(content)
+        assert data["protocol"] == PROTOCOL_ID
+        assert data["version"] == PROTOCOL_VERSION
+
+    def test_envelope_rejects_unknown_protocol(self):
+        """Envelope with wrong protocol is rejected."""
+        from hermes_payments.envelope import decode_content
+        import json
+        data = {
+            "protocol": "wrong-protocol",
+            "version": "1",
+            "type": "payment_intent",
+            "payload": {},
+        }
+        with pytest.raises(ValueError, match="unknown protocol"):
+            decode_content(json.dumps(data))
+
+    def test_envelope_rejects_wrong_version(self):
+        """Envelope with wrong version is rejected."""
+        from hermes_payments.envelope import decode_content
+        import json
+        data = {
+            "protocol": "hermes-payments",
+            "version": "99",
+            "type": "payment_intent",
+            "payload": {},
+        }
+        with pytest.raises(ValueError, match="unsupported protocol version"):
+            decode_content(json.dumps(data))
+
+    # -- (5) Validation rejects bad events --
+
+    def test_validate_rejects_non_nine_kind(self):
+        """Events with kind != 9 are rejected."""
+        from hermes_payments.transport import (
+            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+        )
+        event = RawBuzzEvent(
+            id="ev-999", pubkey="aa" * 32, kind=1,
+            content="hello", tags=[["h", "test-ch"]], created_at=NOW,
+        )
+        with pytest.raises(EnvelopeValidationError, match="expected 9"):
+            validate_received_event(event, expected_channel="test-ch")
+
+    def test_validate_rejects_wrong_channel(self):
+        """Events with wrong h-tag channel are rejected."""
+        from hermes_payments.transport import (
+            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            encode_content,
+        )
+        intent = make_intent()
+        event = RawBuzzEvent(
+            id="ev-wrong", pubkey=SENDER_PUBKEY, kind=9,
+            content=encode_content(intent),
+            tags=[["h", "wrong-channel"]], created_at=NOW,
+        )
+        with pytest.raises(EnvelopeValidationError, match="does not match"):
+            validate_received_event(event, expected_channel="test-ch")
+
+    def test_validate_rejects_expired_message(self):
+        """Received messages past their expiry are rejected."""
+        from hermes_payments.transport import (
+            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            encode_content,
+        )
+        intent = make_intent(expires_at=NOW - 1)
+        event = RawBuzzEvent(
+            id="ev-exp", pubkey=SENDER_PUBKEY, kind=9,
+            content=encode_content(intent),
+            tags=[["h", "test-ch"]], created_at=NOW - 100,
+        )
+        with pytest.raises(EnvelopeValidationError, match="expired"):
+            validate_received_event(
+                event, expected_channel="test-ch", clock=lambda: NOW
+            )
+
+    def test_validate_rejects_identity_mismatch(self):
+        """Received intent with wrong author pubkey is rejected."""
+        from hermes_payments.transport import (
+            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            encode_content,
+        )
+        intent = make_intent()
+        event = RawBuzzEvent(
+            id="ev-wrong", pubkey="dd" * 32, kind=9,
+            content=encode_content(intent),
+            tags=[["h", "test-ch"]], created_at=NOW,
+        )
+        with pytest.raises(EnvelopeValidationError, match="does not match"):
+            validate_received_event(
+                event, expected_channel="test-ch", clock=lambda: NOW
+            )
+
+    def test_validate_rejects_invalid_json(self):
+        """Received events with non-JSON content are rejected."""
+        from hermes_payments.transport import (
+            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+        )
+        event = RawBuzzEvent(
+            id="ev-bad", pubkey="aa" * 32, kind=9,
+            content="not json", tags=[["h", "test-ch"]], created_at=NOW,
+        )
+        with pytest.raises(EnvelopeValidationError, match="content validation"):
+            validate_received_event(event, expected_channel="test-ch")
+
+    # -- (6) Receipt author identity is validated --
+
+    def test_receipt_has_recipient(self):
+        """PaymentReceipt includes recipient identity for author validation."""
+        intent = make_intent()
+        quote = make_quote(intent)
+        receipt = make_receipt(intent, quote)
+        assert hasattr(receipt, "recipient")
+        assert receipt.recipient.pubkey == RECIPIENT_PUBKEY
+
+    def test_receipt_author_must_match_recipient(self):
+        """Receipt authored by non-recipient is rejected."""
+        from hermes_payments.transport import (
+            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            encode_content,
+        )
+        intent = make_intent()
+        quote = make_quote(intent)
+        receipt = make_receipt(intent, quote)
+        event = RawBuzzEvent(
+            id="ev-r-wrong", pubkey="dd" * 32, kind=9,
+            content=encode_content(receipt),
+            tags=[["h", "test-ch"]], created_at=NOW,
+        )
+        with pytest.raises(EnvelopeValidationError, match="does not match"):
+            validate_received_event(
+                event, expected_channel="test-ch", clock=lambda: NOW
+            )
