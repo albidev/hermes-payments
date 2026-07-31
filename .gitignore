@@ -13,3 +13,4 @@ htmlcov/
 secrets/
 artifacts/
 src/hermes_payments.egg-info/
+.worktrees/
