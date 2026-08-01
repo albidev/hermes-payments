@@ -31,7 +31,7 @@ The initial `PENDING` response was treated as ambiguous. No automatic retry was 
 | Channel scope | NIP-29 `h` tag equal to the channel UUID |
 | Relay | local Buzz relay at `127.0.0.1:3030` |
 
-Only public identifiers are recorded. Private keys, wallet passwords, and the BOLT-11 invoice remain local and are not reproduced here.
+Only public identifiers are recorded. Private keys, wallet passwords, the BOLT-11 invoice, and the full payment hash remain local and are not reproduced here. The shared payment-hash prefix is included only to show that the independently observed sender and recipient records refer to the same settlement.
 
 ## Buzz protocol exchange
 
@@ -58,7 +58,7 @@ amount_sat=2100
 expected_fee_sat=0
 expected_total_outflow_sat=2100
 internal route=IN_ARK
-payment_hash=69ea1051c382a972ad5f7d925d62edbc34de018bb145467686fa83a0258306c3
+payment_hash=<redacted; public prefix 69ea1051 only>
 ```
 
 The local approval was bound to the exact `(intent_id, quote_id, prepared_hash)` tuple. The raw `Send` consumed the prepared `send_intent_id` and returned `ENTRY_STATUS_PENDING` with `actual_amount_sat=2100`. Because a post-dispatch pending result is ambiguous, the runner did not retry.
@@ -66,8 +66,8 @@ The local approval was bound to the exact `(intent_id, quote_id, prepared_hash)`
 Independent activity inspection then produced:
 
 ```text
-Alice: kind=send  status=complete amount_sat=-2100 fee_sat=0 payment_hash=69ea1051...
-Bob:   kind=recv  status=complete amount_sat=2100  fee_sat=0 payment_hash=69ea1051...
+Alice: kind=send  status=complete amount_sat=-2100 fee_sat=0 payment_hash=<redacted; public prefix 69ea1051>
+Bob:   kind=recv  status=complete amount_sat=2100  fee_sat=0 payment_hash=<redacted; public prefix 69ea1051>
 ```
 
 The same payment hash, amount, and zero fee were present on both sides. Only after Bob's `RECV COMPLETE` was verified did Bob publish the receipt above. The receipt was independently read back from the relay as `kind=9`, authored by Bob, with `amount_sat=2100` and `fee_sat=0`.
