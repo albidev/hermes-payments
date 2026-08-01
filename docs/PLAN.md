@@ -24,9 +24,9 @@ P5 is a deterministic integration proof. P6 is a deployment proof and cannot be 
 
 ## Live settlement milestone
 
-The wallet settlement sub-gate is complete on Signet. See [live-signet-payment.md](live-signet-payment.md) for the exact prepared intent, boarding evidence, activity references, and explicit non-claims.
+The wallet settlement sub-gate is complete on Signet. The Buzz kind-9 transport sub-gate is complete against a real local relay. See [live-signet-payment.md](live-signet-payment.md) and [live-buzz-transport.md](live-buzz-transport.md) for the two separate proofs.
 
-The full P6 gate remains open until the same lifecycle is driven by two Hermes processes over a real Buzz kind-9 channel, followed by recovery testing.
+The full P6 gate remains open until the same lifecycle is driven by two Hermes processes over a real Buzz channel, bound to a real Wavelength regtest settlement, followed by recovery testing.
 
 ## Rail evolution
 

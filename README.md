@@ -34,6 +34,7 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 | Buzz transport | Implemented | NIP-29 kind 9, `src/hermes_payments/transport.py` |
 | Wavelength adapter | Implemented for **regtest only** | Raw `PrepareSend`/`Send`, recipient-side `activity --kind recv` |
 | Live Signet Wavelength settlement | Verified externally | [Live evidence](docs/live-signet-payment.md) |
+| Live Buzz kind-9 transport | Verified on local relay | [Live evidence](docs/live-buzz-transport.md) |
 | Two-Hermes deterministic proof | Implemented and tested | `tests/test_two_hermes_e2e.py` |
 | Two real daemons + real Buzz channel | Open operational gate | `docs/VERIFICATION.md` |
 | Ark as a first-class protocol rail | Intentionally open | `docs/RAILS.md` |
@@ -97,6 +98,8 @@ The test suite is deterministic and offline. It uses `FakeExecutor` for Buzz and
 │   ├── test_transport.py
 │   ├── test_wavelength_adapter.py
 │   └── test_two_hermes_e2e.py
+├── examples/
+│   └── live-signet/
 └── docs/
     ├── ARCHITECTURE.md
     ├── CONTRACT.md
@@ -111,6 +114,7 @@ The test suite is deterministic and offline. It uses `FakeExecutor` for Buzz and
     ├── TESTING.md
     ├── VERIFICATION.md
     ├── live-signet-payment.md
+    ├── live-buzz-transport.md
     └── diagrams/
 ```
 
@@ -130,6 +134,7 @@ The test suite is deterministic and offline. It uses `FakeExecutor` for Buzz and
 | [Glossary](docs/GLOSSARY.md) | Terms used across the protocol and integrations |
 | [Verification status](docs/VERIFICATION.md) | What is proved, what is not, and the remaining live gates |
 | [Live Signet evidence](docs/live-signet-payment.md) | Reproducible record of the first real Wavelength/Ark wallet settlement |
+| [Live Buzz evidence](docs/live-buzz-transport.md) | Real local relay proof for signed kind-9 intent and quote exchange |
 | [Diagrams](docs/diagrams/README.md) | Mermaid source plus a standalone visual architecture diagram |
 
 ## Design rules

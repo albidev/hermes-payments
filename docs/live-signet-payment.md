@@ -5,7 +5,7 @@
 **Date:** 2026-08-01<br>
 **Repository commit before the run:** `ec42184`
 
-This document records the first successful live Wavelength payment used by the Hermes Payments project. It is evidence for the **settlement path**, not a claim that the full Buzz-mediated two-Hermes protocol has already run on a live channel.
+This document records the first successful live Wavelength payment used by the Hermes Payments project. It is evidence for the **settlement path**, not a claim that Buzz and Wavelength were combined in that Signet run. The separate [live Buzz transport proof](live-buzz-transport.md) covers signed kind-9 transport on a local relay.
 
 ## Result
 
