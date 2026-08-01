@@ -1,0 +1,12 @@
+flowchart TB
+    Remote[Remote Buzz event\nUNTRUSTED] --> Validate[Kind + channel + schema\nexpiry + author validation]
+    Validate --> Policy[Typed policy core\nallowlists + fee + state]
+    Suggestion[LLM suggestion\nUNTRUSTED] --> Policy
+    Policy --> Prepare[Non-mutating prepare]
+    Prepare --> Approval[Local human approval\nexact triple]
+    Approval --> Adapter[Settlement adapter]
+    Adapter --> Wallet[Wallet CLI / daemon]
+    Wallet --> Receipt[Recipient-side activity verification]
+    Receipt --> Audit[Receipt + audit trail]
+    Remote -. cannot authorize .-> Wallet
+    Suggestion -. cannot authorize .-> Wallet

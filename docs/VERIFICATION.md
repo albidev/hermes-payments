@@ -1,119 +1,44 @@
-# P5 Verification — Two-Hermes End-to-End Deterministic Integration Proof
+# Verification Status
 
-## What this proves
+This document prevents the repository from confusing “the tests passed” with “the money moved.”
 
-The P5 test suite (`tests/test_two_hermes_e2e.py`) proves **protocol composition**
-across two independent Hermes instances (Alice = sender, Bob = recipient) sharing
-a single Buzz channel, using only deterministic fakes:
+## Verified in the repository
 
-- **FakeExecutor** (in-memory Buzz relay seam, `transport.py`)
-- **FakeWavecliExecutor** (in-memory wavecli seam, `adapter.py`)
-- **WavelengthAdapter** (settlement adapter, `adapter.py`)
-- **PaymentOrchestrator** (policy engine, `policy.py`)
-- **BuzzTransport** (channel-scoped transport, `transport.py`)
-- **validate_received_event** (untrusted message validation, `transport.py`)
-- **encode_content / decode_content** (wire codec, `envelope.py`)
+The deterministic suite exercises domain model validation and canonical hashing, state transitions and terminal states, idempotency and approval replay protection, Buzz kind-9 envelope encoding/decoding, channel/expiry/protocol/authorship validation, `PaymentApproval` exclusion from transport, Wavelength raw RPC command construction, exact prepared send intent binding, fee/amount/expiry/payment-hash checks, recipient-side `recv` verification, complete and receipt-mediated two-Hermes paths, and ambiguous execution fail-closed behavior.
 
-No waved daemon, Docker, Buzz CLI, network, subprocess, or external repos.
-
-## Two settlement paths demonstrated
-
-### Path A — Adapter-Complete Settlement (10 tests)
-
-Alice's adapter returns `COMPLETE` → Alice settles immediately via `execute()`.
-
-```
-Alice                                    Bob
-─────                                    ───
-create PaymentIntent ────Buzz────►  validate as untrusted
-                                   create PaymentQuote
-validate quote ◄────Buzz────
-WavelengthAdapter.prepare() (fake) → binding token
-local PaymentApproval (never sent)
-WavelengthAdapter.execute() (fake) → COMPLETE → SETTLED ✓
-                                   verify recv activity (fake) ✓
-                                   publish PaymentReceipt ◄────Buzz
-```
-
-Proves:
-1. Intent flows from Alice to Bob via Buzz (kind 9 envelope)
-2. Bob validates intent as untrusted (validate_received_event)
-3. Quote flows from Bob to Alice via Buzz
-4. Adapter.prepare() returns a deterministic binding token
-5. PaymentApproval binds (intent_id, quote_id, prepared_hash) and is never serialized
-6. Adapter.execute() consumes exact send_intent_id → COMPLETE → SETTLED
-7. Bob's adapter verifies recv activity matches payment_hash/amount
-8. Bob publishes receipt via Buzz
-
-### Path B — Receipt-Mediated Settlement (4 tests)
-
-Alice's adapter returns `PENDING` → `RECONCILIATION_REQUIRED` → Bob's receipt → SETTLED.
-
-```
-Alice                                    Bob
-─────                                    ───
-create PaymentIntent ────Buzz────►  validate as untrusted
-                                   create PaymentQuote
-validate quote ◄────Buzz────
-WavelengthAdapter.prepare() (fake) → binding token
-local PaymentApproval (never sent)
-WavelengthAdapter.execute() (fake) → PENDING → RECONCILIATION_REQUIRED
-                                   verify recv activity (fake) ✓
-  receive receipt ◄────Buzz────     publish PaymentReceipt
-validate receipt → SETTLED ✓
-```
-
-Proves:
-1. PENDING/unknown adapter result → RECONCILIATION_REQUIRED (fail-closed)
-2. Bob independently verifies payment via recv activity
-3. Bob publishes signed receipt via Buzz
-4. Alice's `receive_receipt()` verifies receipt → transitions to SETTLED
-
-## Negative tests (17 tests)
-
-| Category | Tests | What it proves |
-|---|---|---|
-| Duplicate/replay | 2 | Duplicate intent is idempotent; duplicate receipt rejected by state gate |
-| Tampered/expired | 7 | Wrong kind, wrong channel, tampered pubkey, expired intent/quote, bad protocol, kind 40100 — all rejected before policy |
-| Send pending/unknown | 4 | PENDING → RECONCILIATION_REQUIRED, no receipt; unknown status → same; only confirm_settled or receipt can resolve |
-| Approval never in Buzz | 2 | PaymentApproval never appears in FakeExecutor sent list; encode_content raises TypeError |
-| Receipt validation | 2 | Wrong payment hash → verified=False; wrong amount → verified=False with mismatch error |
-
-## Running the tests
+Run the current suite with:
 
 ```bash
-# Run P5 tests only
-pytest tests/test_two_hermes_e2e.py -v
-
-# Run full suite (302 tests)
-pytest -v
+pytest -q
 ```
 
-## What this does NOT prove (operational gate)
+## Not proved by the repository suite
 
-This is a **deterministic integration proof**, not a live regtest proof.
+The suite does not prove that a real Buzz binary or relay is available, that two Hermes processes can share a live channel, that a Wavelength daemon is running, that an operator accepts a wallet, that a real invoice settles, that a live route is Lightning/Ark/another backend path, or that timeout recovery works on deployed infrastructure.
 
-To claim **live settlement**, the following operational gate must be satisfied:
+## P6 live gate
 
-1. **Two actual waved regtest daemons** — one per Hermes instance (Alice and Bob),
-   each with a funded wallet on the same regtest network.
+| Gate | Evidence required | Status |
+|---|---|---:|
+| Two isolated Hermes instances | Separate process/config/state roots | Open |
+| Real Buzz transport | Signed kind-9 event observed by both sides | Open |
+| Funded sender | Spendable wallet balance, not merely pending funding | Open |
+| Fresh prepared intent | `PrepareSend` result inspected and approved | Open |
+| Exact execution | Raw `Send` consumes that prepared ID | Open |
+| Recipient receipt | `activity --kind recv` matches reference and amount | Open |
+| Recovery | Pending/ambiguous path manually reconciled | Open |
 
-2. **Real Buzz channel** — both daemons connected to the same Buzz relay, publishing
-   and receiving kind 9 messages with real cryptographic signatures.
+## Signet observation
 
-3. **Funded sender** — Alice's waved daemon must have sufficient balance to cover
-   `amount_sat + fee_sat` (2,110 sats minimum for this test).
+During external Wavelength investigation, a persistent Alice wallet received pending on-chain bootstrap funds and a non-mutating quote for Bob's invoice returned:
 
-4. **Lightning invoice** — Bob generates a real Lightning invoice (bolt11) and
-   publishes it in the PaymentQuote. Alice pays it via Wavelength adapter.
+```text
+rail:          in_ark
+amount:        2100 sat
+expected fee:  0 sat
+quote status:  complete
+```
 
-5. **Real Wavelength adapter** — Alice's adapter must call `wavecli dev ... PrepareSend`
-   and `wavecli dev ... Send` against a live daemon. Bob's adapter must call
-   `wavecli dev ... activity --kind recv` against his own daemon.
+This is useful operational evidence about Wavelength route selection, but it is **not** P6 repository proof: the checked-in adapter still rejects `signet`; the quote was prepared outside the Python two-Hermes stack; the send was not approved or executed; and the wallet was still waiting for spendable Ark liquidity.
 
-6. **Real Buzz transport** — Messages must flow through actual Buzz relay infrastructure,
-   not FakeExecutor.
-
-Until all six conditions are met, this test proves that the protocol specification
-is correct and internally consistent, but does NOT prove that settlement works
-on real infrastructure.
+The distinction is intentional. A log line is not a settlement receipt.

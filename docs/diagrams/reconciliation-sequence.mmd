@@ -1,0 +1,18 @@
+sequenceDiagram
+    participant A as Alice policy
+    participant W as Adapter
+    participant D as Wallet daemon
+    participant B as Bob verifier
+    participant BZ as Buzz
+
+    A->>W: execute(exact prepared intent)
+    W->>D: raw Send
+    D-->>W: timeout / PENDING / unknown
+    W-->>A: AmbiguousResult
+    A->>A: EXECUTING → RECONCILIATION_REQUIRED
+    Note over A: No automatic retry
+    B->>D: activity --kind recv
+    D-->>B: COMPLETE matching entry
+    B->>BZ: PaymentReceipt
+    BZ->>A: receipt
+    A->>A: verify → SETTLED

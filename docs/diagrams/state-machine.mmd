@@ -1,0 +1,27 @@
+stateDiagram-v2
+    [*] --> DRAFT
+    DRAFT --> SUBMITTED: submit
+    SUBMITTED --> QUOTED: quote_received
+    QUOTED --> PREPARED: prepared
+    PREPARED --> APPROVED: approved
+    APPROVED --> EXECUTING: executing
+    EXECUTING --> SETTLED: settled
+    EXECUTING --> RECONCILIATION_REQUIRED: ambiguity / timeout / error
+    RECONCILIATION_REQUIRED --> SETTLED: verified receipt
+    RECONCILIATION_REQUIRED --> SETTLED: manual confirmation
+
+    DRAFT --> CANCELLED: cancel
+    SUBMITTED --> CANCELLED: cancel
+    QUOTED --> CANCELLED: cancel
+    PREPARED --> CANCELLED: cancel
+    SUBMITTED --> REJECTED: rejected
+    QUOTED --> REJECTED: rejected
+    PREPARED --> REJECTED: rejected
+    APPROVED --> REJECTED: rejected
+    SUBMITTED --> EXPIRED: expired
+    QUOTED --> EXPIRED: expired
+    PREPARED --> EXPIRED: expired
+    APPROVED --> EXPIRED: expired
+    QUOTED --> FAILED: adapter_error
+    PREPARED --> FAILED: adapter_error
+    APPROVED --> FAILED: adapter_error

@@ -1,0 +1,25 @@
+sequenceDiagram
+    autonumber
+    participant A as Hermes A / Alice
+    participant BZ as Buzz channel
+    participant B as Hermes B / Bob
+    participant W as WavelengthAdapter
+    participant D as Wavelength daemon
+
+    A->>BZ: kind 9 PaymentIntent
+    BZ->>B: signed event
+    B->>B: validate as untrusted
+    B->>BZ: kind 9 PaymentQuote
+    BZ->>A: signed event
+    A->>W: prepare(receive_instruction)
+    W->>D: raw PrepareSend
+    D-->>W: exact send_intent_id + preview
+    W-->>A: prepared payload + hash
+    A->>A: local human approval
+    A->>W: execute(exact prepared payload)
+    W->>D: raw Send(send_intent_id)
+    D-->>W: COMPLETE + settlement reference
+    B->>D: activity --kind recv
+    D-->>B: matching incoming activity
+    B->>BZ: kind 9 PaymentReceipt
+    BZ->>A: signed receipt

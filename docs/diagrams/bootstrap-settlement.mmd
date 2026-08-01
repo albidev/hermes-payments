@@ -1,0 +1,10 @@
+flowchart LR
+    F[Initial liquidity\non-chain deposit, existing VTXO,\nor operator credit] --> B[Wallet boarding]
+    B --> V[Spendable VTXO]
+    V --> P[Prepare invoice payment]
+    P --> R{Backend route}
+    R -->|compatible operator| A[Ark in-operator settlement]
+    R -->|network route| L[Lightning settlement]
+    A --> Q[Recipient incoming activity]
+    L --> Q
+    Q --> C[Verified PaymentReceipt]

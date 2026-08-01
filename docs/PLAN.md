@@ -1,19 +1,36 @@
-# Hermes Payments v0 — Kanban Plan
+# Project Plan
 
-**Goal:** prove one replay-safe, human-approved Hermes-to-Hermes regtest payment coordinated through signed Buzz events and settled by Wavelength.
+## Product goal
 
-## Five gates
+Prove one replay-safe, human-approved payment between two Hermes identities, coordinated through signed Buzz channel messages and settled by a pluggable Wavelength adapter.
 
-1. **Protocol contract** — define versioned intent, quote, approval and receipt schemas; enumerate terminal/error states and invariants.
-2. **Core policy engine** — implement rail-neutral state machine, idempotency store and approval binding under tests.
-3. **Buzz transport adapter** — map signed Buzz messages/events to the contract without treating them as authorization.
-4. **Wavelength adapter** — regtest-only prepare/execute/receipt boundary; credentials stay local and out of messages.
-5. **Two-agent E2E + guardian** — two isolated Hermes identities complete one 2,100-sat payment; assert no double-pay and demonstrate failure/expiry handling.
+## Completed implementation gates
+
+| Gate | Scope | Status |
+|---|---|---:|
+| P1 | Versioned protocol contract and canonical IDs | Complete |
+| P2 | Rail-neutral state machine, policy, idempotency, audit | Complete |
+| P3 | Buzz transport with NIP-29 kind-9 envelopes | Complete |
+| P4 | Regtest-only Wavelength prepare/execute/receipt adapter | Complete |
+| P5 | Deterministic two-Hermes composition and failure paths | Complete |
+
+## Open operational gate
+
+| Gate | Requirement | Status |
+|---|---|---:|
+| P6 | Two real daemons, real Buzz channel, funded sender, real receipt, recovery evidence | Open |
+
+P5 is a deterministic integration proof. P6 is a deployment proof and cannot be declared complete by adding more fake-executor tests.
+
+## Rail evolution
+
+The first protocol receive instruction is a Lightning invoice. Wavelength can internally route an invoice through Ark when the operator and wallet support it. First-class Ark protocol semantics are a separate follow-up and require their own instruction schema, policy, receipt, and compatibility tests.
 
 ## Exit criteria
 
 - Replaying the same intent cannot settle twice.
 - Approval for one quote/prepared payload cannot authorize another.
-- A receipt links to a verifiable settlement reference.
-- Full event/audit chain reconstructs the transaction.
-- No secret appears in test fixtures, logs or Buzz payloads.
+- A receipt links to independently verifiable settlement activity.
+- The complete audit chain reconstructs the lifecycle.
+- No secret appears in fixtures, logs, or Buzz payloads.
+- Live evidence is reported separately from deterministic evidence.
