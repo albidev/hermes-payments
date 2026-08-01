@@ -4,7 +4,7 @@
 
 Hermes Payments separates the part that decides **whether a payment is allowed** from the part that moves money. `PeerTransport` is the transport-neutral boundary between Hermes agents. Buzz currently provides the signed coordination adapter and audit trail behind that boundary. The policy core owns intent state, idempotency, approval binding, and reconciliation. Settlement adapters own rail-specific execution. Wavelength is the first adapter.
 
-> This repository is deliberately conservative: no autonomous spending, no mainnet configuration, no secrets in transport messages, and no claim of full live protocol completion until the operational gates are actually green.
+> **Known limitation:** the current `PaymentOrchestrator` supports one active payment flow per instance; it is not a concurrent multi-payment scheduler. See [Known limitations](docs/KNOWN_LIMITATIONS.md).
 
 ## What this repository is
 
@@ -144,6 +144,7 @@ The tree below highlights the main files; it is intentionally abbreviated.
 | [Decisions](docs/DECISIONS.md) | Architecture decision records and unresolved choices |
 | [Glossary](docs/GLOSSARY.md) | Terms used across the protocol and integrations |
 | [Verification status](docs/VERIFICATION.md) | What is proved, what is not, and the remaining live gates |
+| [Known limitations](docs/KNOWN_LIMITATIONS.md) | Explicit current constraints, including single-active-flow orchestration |
 | [Live Signet settlement](docs/live-signet-payment.md) | Narrow Wavelength/Ark wallet settlement proof |
 | [Live Signet Buzz + Wavelength vertical](docs/live-signet-buzz-vertical.md) | Combined kind-9 coordination, prepared execution, reconciliation, and receipt evidence |
 | [Live Buzz evidence](docs/live-buzz-transport.md) | Real local relay proof for signed kind-9 intent and quote exchange |

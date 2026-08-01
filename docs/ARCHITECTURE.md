@@ -66,6 +66,8 @@ It never becomes a normal retryable failure after execution may have started.
 
 `PaymentApproval` is rejected before it can enter this boundary. Transport message IDs are retained so a relay duplicate can be distinguished from a domain duplicate; policy idempotency remains the authority for replay safety.
 
+`PaymentOrchestrator` currently supports one active payment flow per instance. It can retain historical intent records for idempotency and audit, but it is not a concurrent multi-payment scheduler: lifecycle operations expect one matching active intent by state. Deployments needing concurrency must isolate flows or introduce explicit intent selection and locking. See [Known limitations](KNOWN_LIMITATIONS.md).
+
 ### Buzz adapter — `envelope.py` and `transport.py`
 
 Buzz is the current concrete `PeerTransport` adapter. Three domain message types travel through a single NIP-29 kind-9 channel message. The content field is a versioned JSON envelope:

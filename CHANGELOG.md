@@ -5,6 +5,7 @@ All notable changes to this project are documented here.
 ## Unreleased
 
 - Redacted full live evidence identifiers from public documentation while retaining short verification prefixes.
+- Documented the current single-active-payment-flow limitation of `PaymentOrchestrator` and the requirements for future concurrency.
 - Added the transport-neutral `PeerTransport` contract and role-neutral `HermesPeer` endpoint.
 - Added deterministic `InMemoryTransportHub` Hermes-to-Hermes coverage with replay and reconciliation paths.
 - Adapted Buzz to the generic peer contract while preserving the existing helper methods for compatibility.
