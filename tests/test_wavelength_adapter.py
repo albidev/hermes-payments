@@ -18,19 +18,9 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
-import sys
 import time
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
-
-from fixtures import (
-    NOW,
-    ONE_HOUR,
-)
 
 from hermes_payments.adapter import (
     AdapterError,
@@ -51,6 +41,10 @@ from hermes_payments.models import (
     Rail,
     RailReceiveInstruction,
     compute_prepared_hash,
+)
+from tests.fixtures import (
+    NOW,
+    ONE_HOUR,
 )
 
 # ---------------------------------------------------------------------------

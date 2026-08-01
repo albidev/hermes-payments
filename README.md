@@ -79,6 +79,8 @@ The test suite is deterministic and offline. It uses `FakeExecutor` for Buzz and
 
 ## Repository map
 
+The tree below highlights the main files; it is intentionally abbreviated.
+
 ```text
 .
 ├── README.md
@@ -111,7 +113,6 @@ The test suite is deterministic and offline. It uses `FakeExecutor` for Buzz and
     ├── PHILOSOPHY.md
     ├── PLAN.md
     ├── RAILS.md
-    ├── SECURITY.md
     ├── TESTING.md
     ├── VERIFICATION.md
     ├── live-signet-payment.md

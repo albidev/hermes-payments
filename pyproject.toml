@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-payments"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Policy-first, multi-rail payment protocol for Hermes agents."
 requires-python = ">=3.10"
 license = "MIT"
@@ -30,6 +30,9 @@ ignore = ["E501"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "hermes_payments.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

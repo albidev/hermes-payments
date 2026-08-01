@@ -31,7 +31,7 @@ The initial `PENDING` response was treated as ambiguous. No automatic retry was 
 | Channel scope | NIP-29 `h` tag equal to the channel UUID |
 | Relay | local Buzz relay at `127.0.0.1:3030` |
 
-Only public identifiers are recorded. Private keys, wallet passwords, the BOLT-11 invoice, and the full payment hash remain local and are not reproduced here. The shared payment-hash prefix is included only to show that the independently observed sender and recipient records refer to the same settlement.
+Only public identifiers and abbreviated evidence handles are recorded. Private keys, wallet passwords, the BOLT-11 invoice, the full prepared hash, and the full payment hash remain local and are not reproduced here. The shared payment-hash prefix is included only to show that the independently observed sender and recipient records refer to the same settlement.
 
 ## Buzz protocol exchange
 
@@ -53,7 +53,7 @@ The sender used the raw Wavelength RPC path:
 
 ```text
 PrepareSend → send_intent_id=2ecd9983847ac484c5eaaf93b1e93849
-prepared_hash=e49fce9f3b7c50168c192d37150cd833d699d19ed9d67dfdbeedec7da9178853
+prepared_hash=e49fce9f...
 amount_sat=2100
 expected_fee_sat=0
 expected_total_outflow_sat=2100

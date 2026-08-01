@@ -17,7 +17,7 @@ import json
 from enum import Enum
 from typing import Literal, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -116,13 +116,6 @@ class PaymentIntent(BaseModel):
     max_fee_sat: int = Field(..., ge=0, description="Maximum acceptable fee in satoshis")
     expires_at: int = Field(..., description="Unix epoch seconds; intent is void after this")
     created_at: int = Field(..., description="Unix epoch seconds; intent creation time")
-
-    @field_validator("expires_at")
-    @classmethod
-    def _expiry_must_be_future(_cls, v: int) -> int:
-        # Allow past values in fixtures/tests — validation is best-effort here.
-        return v
-
 
 class PaymentQuote(BaseModel):
     """Recipient's response to an accepted intent.

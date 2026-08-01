@@ -27,7 +27,7 @@ The payment was executed only after explicit local approval of the exact prepare
 | Item | Value |
 |---|---|
 | `send_intent_id` | `3cb1685f1805c8e140e6161a783eec1e` |
-| payment/activity reference | `8dc01eaf25ae1937828914bc8fc7ab8132618123b24a78141172793f14524e6a` |
+| payment/activity reference | `8dc01eaf...` |
 | amount | `2100 sat` |
 | fee | `0 sat` |
 | route reported by Wavelength | `in_ark` |
@@ -41,7 +41,7 @@ Alice: id=8dc01eaf... kind=send    status=complete amount_sat=-2100 fee_sat=0
 Bob:   id=8dc01eaf... kind=receive status=complete amount_sat=2100  fee_sat=0
 ```
 
-The full reference is the value in the table above. The abbreviated form is used only in this block to keep logs readable.
+Only the public prefix is included here; the full reference remains in the local activity logs.
 
 ## Bootstrap evidence
 

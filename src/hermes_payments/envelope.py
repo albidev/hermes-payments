@@ -23,14 +23,17 @@ This module is the adapter boundary between protocol domain and transport.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Literal, Optional, Type
+from typing import Any, Dict, List, Literal, Type
 
 from pydantic import BaseModel, Field
 
 from .models import (
     MessageKind,
     PaymentApproval,
+    PaymentIntent,
     PaymentMessage,
+    PaymentQuote,
+    PaymentReceipt,
 )
 
 # ---------------------------------------------------------------------------
@@ -51,23 +54,11 @@ PROTOCOL_VERSION: str = "1"
 # Message-type discriminator maps
 # ---------------------------------------------------------------------------
 
-# Lazy import to avoid circular imports at module level
-_MODEL_MAP: Optional[Dict[str, Type[PaymentMessage]]] = None
-
-
-def _get_model_map() -> Dict[str, Type[PaymentMessage]]:
-    """Lazy-loaded map from envelope type string to domain model class."""
-    global _MODEL_MAP
-    if _MODEL_MAP is None:
-        from .models import PaymentIntent, PaymentQuote
-        from .models import PaymentReceipt as PR
-
-        _MODEL_MAP = {
-            MessageKind.INTENT.value: PaymentIntent,
-            MessageKind.QUOTE.value: PaymentQuote,
-            MessageKind.RECEIPT.value: PR,
-        }
-    return _MODEL_MAP
+_MODEL_MAP: Dict[str, Type[PaymentMessage]] = {
+    MessageKind.INTENT.value: PaymentIntent,
+    MessageKind.QUOTE.value: PaymentQuote,
+    MessageKind.RECEIPT.value: PaymentReceipt,
+}
 
 
 # ``KIND_MAP`` remains for callers that need the Nostr kind, but the
@@ -153,8 +144,7 @@ def decode_content(content: str) -> PaymentMessage:
     if type_str is None:
         raise ValueError("envelope missing 'type' field")
 
-    model_map = _get_model_map()
-    model_cls = model_map.get(type_str)
+    model_cls = _MODEL_MAP.get(type_str)
     if model_cls is None:
         raise ValueError(f"unknown envelope type {type_str!r}")
 
@@ -170,16 +160,13 @@ def decode_content(content: str) -> PaymentMessage:
 
 def _kind_for_model(message: PaymentMessage) -> MessageKind:
     """Map a model instance to its MessageKind."""
-    class_name = type(message).__name__
-    mapping = {
-        "PaymentIntent": MessageKind.INTENT,
-        "PaymentQuote": MessageKind.QUOTE,
-        "PaymentReceipt": MessageKind.RECEIPT,
-    }
-    result = mapping.get(class_name)
-    if result is None:
-        raise TypeError(f"{class_name} is not a transportable payment message")
-    return result
+    if isinstance(message, PaymentIntent):
+        return MessageKind.INTENT
+    if isinstance(message, PaymentQuote):
+        return MessageKind.QUOTE
+    if isinstance(message, PaymentReceipt):
+        return MessageKind.RECEIPT
+    raise TypeError(f"{type(message).__name__} is not a transportable payment message")
 
 
 # ---------------------------------------------------------------------------

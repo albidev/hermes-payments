@@ -127,7 +127,7 @@ class IdempotencyStore:
                     sort_keys=True,
                 )
             os.replace(tmp_path, self._path)
-        except BaseException:
+        except Exception:
             # Clean up temp file on failure; original is untouched.
             try:
                 os.unlink(tmp_path)
@@ -400,11 +400,6 @@ class PaymentOrchestrator:
         - Transitions SUBMITTED → QUOTED.
         """
         rec = self._get_record(quote.intent_id)
-
-        if rec.intent.id != quote.intent_id:
-            raise SubmissionRejected(
-                f"quote intent_id {quote.intent_id} does not match intent {rec.intent.id}"
-            )
 
         if quote.fee_sat > rec.intent.max_fee_sat:
             raise SubmissionRejected(
@@ -780,7 +775,8 @@ class PaymentOrchestrator:
         """Check EXECUTING intents for expiry.
 
         For any intent in EXECUTING whose expires_at has passed, this
-        raises StateError signalling that manual reconciliation is needed.
+        transitions it to RECONCILIATION_REQUIRED and raises StateError.
+        Returns an empty list when no matching intent is expired.
         """
         now = self.now()
         expired: List[str] = []

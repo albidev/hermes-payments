@@ -21,4 +21,4 @@
 - Work in small commits on an isolated Kanban worktree.
 - Tests first for state-machine and policy rules.
 - Run the full relevant test suite before completion.
-- Do not modify `/Users/albi/Projects/wavelength` or `/Users/albi/Projects/buzz`; treat both as external integrations.
+- Do not modify the external Wavelength or Buzz repositories from this repository's workflow.

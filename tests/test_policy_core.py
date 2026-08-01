@@ -11,25 +11,8 @@ No Buzz or Wavelength I/O — uses a stub adapter.
 from __future__ import annotations
 
 import json
-import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
-
-from fixtures import (
-    APPROVER_PUBKEY,
-    NOW,
-    ONE_HOUR,
-    RECIPIENT_PUBKEY,
-    SENDER_PUBKEY,
-    make_approval,
-    make_intent,
-    make_quote,
-    make_receipt,
-)
 
 from hermes_payments.adapter import (
     AdapterError,
@@ -59,6 +42,17 @@ from hermes_payments.policy import (
     UnknownIntent,
 )
 from hermes_payments.state_machine import PaymentState, transition
+from tests.fixtures import (
+    APPROVER_PUBKEY,
+    NOW,
+    ONE_HOUR,
+    RECIPIENT_PUBKEY,
+    SENDER_PUBKEY,
+    make_approval,
+    make_intent,
+    make_quote,
+    make_receipt,
+)
 
 # ---------------------------------------------------------------------------
 # Stub adapter for testing — no real network I/O
@@ -99,7 +93,7 @@ class StubAdapter(SettlementAdapter):
     ) -> PrepareResult:
         if self._fee_sat > max_fee_sat:
             raise AdapterError(
-                f"fee {self._fee_sat} exceeds max {max_fee_sat}", recoverable=True
+                f"fee {self._fee_sat} exceeds max {max_fee_sat}"
             )
         return PrepareResult(
             fee_sat=self._fee_sat,
@@ -246,7 +240,7 @@ class TestExpiry:
         intent = make_intent()
         orch.submit(intent)
         # build a quote that's already expired
-        from fixtures import make_quote
+        from tests.fixtures import make_quote
 
         expired_quote = make_quote(intent, expires_at=NOW - 1)
         with pytest.raises(SubmissionRejected, match="expired"):
@@ -299,7 +293,7 @@ class TestFeeConstraints:
         intent = make_intent(max_fee_sat=5)  # low max fee
         orch.submit(intent)
         # quote with fee exceeding max
-        from fixtures import make_quote
+        from tests.fixtures import make_quote
 
         expensive_quote = make_quote(intent, fee_sat=50)
         with pytest.raises(SubmissionRejected, match="fee"):
@@ -572,7 +566,7 @@ class TestFailClosed:
     def test_adapter_error_during_execution_goes_to_reconciliation(self):
         """AdapterError during execute → RECONCILIATION_REQUIRED."""
         adapter = StubAdapter(
-            execute_raises=AdapterError("connection reset", recoverable=False)
+            execute_raises=AdapterError("connection reset")
         )
         orch = _new_orchestrator(adapter=adapter)
         intent = make_intent()
@@ -855,7 +849,7 @@ class TestP2Regression:
     def test_receive_receipt_rejected_in_failed(self):
         """receive_receipt in FAILED state is rejected."""
         adapter = StubAdapter(
-            execute_raises=AdapterError("boom", recoverable=False)
+            execute_raises=AdapterError("boom")
         )
         orch = _new_orchestrator(adapter=adapter)
         intent = make_intent()
@@ -1238,7 +1232,7 @@ class TestP2Regression:
     def test_forged_receipt_preserves_failed(self):
         """Forged receipt in FAILED leaves state unchanged."""
         adapter = StubAdapter(
-            execute_raises=AdapterError("boom", recoverable=False)
+            execute_raises=AdapterError("boom")
         )
         orch = _new_orchestrator(adapter=adapter)
         intent = make_intent()

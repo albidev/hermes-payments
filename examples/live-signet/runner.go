@@ -33,6 +33,13 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+func publicPrefix(value string) string {
+	if len(value) <= 16 {
+		return value
+	}
+	return value[:8] + "..." + value[len(value)-8:]
+}
+
 func defaultStateRoot() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -261,7 +268,7 @@ func main() {
 	}
 	fmt.Printf("quote amount_sat=%d expected_fee_sat=%d fee_known=%t total_outflow_sat=%d total_known=%t rail=%s quote_status=%s send_intent_id=%s payment_hash=%s warning=%s\n",
 		quote.AmountSat, quote.ExpectedFeeSat, quote.FeeKnown, quote.ExpectedTotalOutflowSat,
-		quote.TotalOutflowKnown, quote.Rail, quote.QuoteStatus, quote.SendIntentID, quote.PaymentHash, quote.Warning)
+		quote.TotalOutflowKnown, quote.Rail, quote.QuoteStatus, quote.SendIntentID, publicPrefix(quote.PaymentHash), quote.Warning)
 	if credit := quote.CreditPreview; credit != nil {
 		fmt.Printf("credit_preview must_use=%t applied_sat=%d shortfall_sat=%d topup_sat=%d ark_funding_sat=%d\n",
 			credit.MustUseCredit, credit.CreditAppliedSat, credit.CreditShortfallSat,

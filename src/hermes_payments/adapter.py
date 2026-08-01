@@ -58,7 +58,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-from .models import Rail, RailReceiveInstruction
+from .models import Rail, RailReceiveInstruction, compute_prepared_hash
 
 # ---------------------------------------------------------------------------
 # Adapter results
@@ -175,12 +175,9 @@ class SettlementAdapter(ABC):
 class AdapterError(Exception):
     """Base class for adapter errors.
 
-    The state machine transitions to FAILED on AdapterError.
+    The policy layer classifies the error by operation. Post-dispatch
+    execution errors are fail-closed as ``RECONCILIATION_REQUIRED``.
     """
-
-    def __init__(self, message: str, recoverable: bool = False):
-        super().__init__(message)
-        self.recoverable = recoverable
 
 
 class AmbiguousResult(AdapterError):
@@ -192,7 +189,7 @@ class AmbiguousResult(AdapterError):
     """
 
     def __init__(self, message: str = "ambiguous settlement result"):
-        super().__init__(message, recoverable=False)
+        super().__init__(message)
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +276,7 @@ _INVOICE_PATTERN = re.compile(
 )
 _MACAROON_PATTERN = re.compile(r"(/[^\s:]+\.macaroon)")
 _HASH_PATTERN = re.compile(r"\b([a-f0-9]{64})\b")
+_PROTO_STATUS_MAP = {0: "UNSPECIFIED", 1: "PENDING", 2: "COMPLETE", 3: "FAILED"}
 
 
 def redact_sensitive(text: str) -> str:
@@ -533,8 +531,7 @@ def _parse_send_response(data: Any) -> Dict[str, Any]:
     status_raw = entry.get("status", "UNSPECIFIED")
     if isinstance(status_raw, int):
         # Proto enum int — normalize to string
-        _ENUM_MAP = {0: "UNSPECIFIED", 1: "PENDING", 2: "COMPLETE", 3: "FAILED"}
-        status = _ENUM_MAP.get(status_raw, str(status_raw))
+        status = _PROTO_STATUS_MAP.get(status_raw, str(status_raw))
     elif isinstance(status_raw, str):
         status = status_raw.upper().replace("ENTRY_STATUS_", "")
     else:
@@ -787,7 +784,6 @@ class WavelengthAdapter(SettlementAdapter):
             "max_fee_sat": max_fee_sat,
         }, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
-        from .models import compute_prepared_hash
         prepared_hash = compute_prepared_hash(prepared_payload)
 
         return PrepareResult(
@@ -812,7 +808,6 @@ class WavelengthAdapter(SettlementAdapter):
         Any transport error after dispatch is AmbiguousResult (no retry).
         """
         # ── Identity check: prepared_payload must match prepared_hash ──
-        from .models import compute_prepared_hash
         actual_hash = compute_prepared_hash(prepared_payload)
         if actual_hash != prepared_hash:
             raise AdapterError(

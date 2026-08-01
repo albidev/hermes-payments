@@ -15,23 +15,8 @@ Covers:
 from __future__ import annotations
 
 import json
-import os
-import sys
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 
 import pytest
-from fixtures import (
-    NOW,
-    ONE_HOUR,
-    RECIPIENT_PUBKEY,
-    SENDER_PUBKEY,
-    make_approval,
-    make_intent,
-    make_quote,
-    make_receipt,
-)
 
 from hermes_payments.envelope import (
     PROTOCOL_ID,
@@ -55,6 +40,16 @@ from hermes_payments.transport import (
     RawBuzzEvent,
     _channel_from_tags,
     validate_received_event,
+)
+from tests.fixtures import (
+    NOW,
+    ONE_HOUR,
+    RECIPIENT_PUBKEY,
+    SENDER_PUBKEY,
+    make_approval,
+    make_intent,
+    make_quote,
+    make_receipt,
 )
 
 # Test channel UUID

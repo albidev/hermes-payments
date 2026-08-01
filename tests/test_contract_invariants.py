@@ -12,22 +12,7 @@ credentials or external services.  They cover:
 
 from __future__ import annotations
 
-import os
-import sys
-
-# Ensure src is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
-
 import pytest
-from fixtures import (
-    NOW,
-    RECIPIENT_PUBKEY,
-    SENDER_PUBKEY,
-    make_approval,
-    make_intent,
-    make_quote,
-    make_receipt,
-)
 
 from hermes_payments.adapter import (
     AmbiguousResult,
@@ -55,6 +40,15 @@ from hermes_payments.state_machine import (
     can_transition,
     reachable_states,
     transition,
+)
+from tests.fixtures import (
+    NOW,
+    RECIPIENT_PUBKEY,
+    SENDER_PUBKEY,
+    make_approval,
+    make_intent,
+    make_quote,
+    make_receipt,
 )
 
 # ===========================================================================
@@ -440,14 +434,6 @@ class TestAdapterBoundary:
         """AmbiguousResult is a subclass of AdapterError."""
         from hermes_payments.adapter import AdapterError
         assert issubclass(AmbiguousResult, AdapterError)
-
-    def test_adapter_error_recoverable_flag(self):
-        """AdapterError carries a recoverable flag."""
-        from hermes_payments.adapter import AdapterError
-        e = AdapterError("test", recoverable=True)
-        assert e.recoverable is True
-        e2 = AdapterError("test", recoverable=False)
-        assert e2.recoverable is False
 
 
 # ===========================================================================

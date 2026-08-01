@@ -25,7 +25,7 @@ The live evidence now covers a real Signet coordination-and-settlement vertical:
 | Two isolated Hermes instances | Separate Hermes processes/config/state roots | Open |
 | Real Buzz transport | Signed kind-9 events observed by both sides | **Verified on Signet** — [combined live evidence](live-signet-buzz-vertical.md) |
 | Funded sender | Spendable wallet balance, not merely pending funding | **Verified on Signet** — [combined live evidence](live-signet-buzz-vertical.md) |
-| Fresh prepared intent | `PrepareSend` result inspected and approved | **Verified on Signet** — exact `prepared_hash` recorded in [live evidence](live-signet-buzz-vertical.md) |
+| Fresh prepared intent | `PrepareSend` result inspected and approved | **Verified on Signet** — prepared-hash binding recorded in abbreviated form in [live evidence](live-signet-buzz-vertical.md) |
 | Exact execution | Raw `Send` consumes that prepared ID | **Verified and reconciled on Signet** — [live evidence](live-signet-buzz-vertical.md) |
 | Recipient receipt | `activity --kind recv` matches reference and amount | **Verified on Signet** — Bob's kind-9 receipt is recorded in [live evidence](live-signet-buzz-vertical.md) |
 | Recovery | Restart/recovery after pending or ambiguous dispatch | **Partial** — manual activity reconciliation verified; restart recovery remains open |
