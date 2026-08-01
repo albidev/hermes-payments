@@ -24,8 +24,8 @@ The local relay used isolated test containers for Postgres and Redis, plus MinIO
 | Item | Value |
 |---|---|
 | channel | `238e871b-ff37-43fa-b785-344fb75b1a55` |
-| Alice public key | `f77a93f9d69d2eb3024559796d290996558e240cbef2647779541f53c7fc9d4d` |
-| Bob public key | `46ce30af340b5dc6b810d62e69d397812eed1825e0a36c391b151195b8c790b7` |
+| Alice public key | `f77a93f9...` |
+| Bob public key | `46ce30af...` |
 | membership | Bob added to the channel by Alice |
 
 Only public identifiers are recorded here. The channel was ephemeral and the identities were test-only.
@@ -36,8 +36,8 @@ Alice sent a `PaymentIntent`; Bob validated it and sent a `PaymentQuote`; Alice 
 
 | Message | Event ID | Domain ID | Author |
 |---|---|---|---|
-| `payment_intent` | `3fd649923fec0f856f2391ade33b437608957352871151fb2af27041db317dab` | `d6080a18f0b3949ac9dc1a203d344ae699340293c80a65f5b8893be56ffdd474` | Alice |
-| `payment_quote` | `a91839a210387907f9b32ab29d39f4f28543ab0252fdc810f886e3c9dbf9563d` | `p6-live-buzz-quote-20260801` | Bob |
+| `payment_intent` | `3fd64992...` | `d6080a18...` | Alice |
+| `payment_quote` | `a91839a2...` | `p6-live-buzz-quote-20260801` | Bob |
 
 Both events were observed as:
 

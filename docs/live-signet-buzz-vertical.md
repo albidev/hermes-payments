@@ -26,8 +26,8 @@ The initial `PENDING` response was treated as ambiguous. No automatic retry was 
 | Item | Value |
 |---|---|
 | Buzz channel | `3e66c65a-d5cb-4cc4-b186-03e27959dfea` |
-| Alice public key | `3cd5f417343c3cb7b7808c3b82051b3637324586d9c13c27d2736b71b28dda26` |
-| Bob public key | `3e90b2004ea559578bcc905508bcf9558566a607555ec21a7ed8b074e614d216` |
+| Alice public key | `3cd5f417...` |
+| Bob public key | `3e90b200...` |
 | Channel scope | NIP-29 `h` tag equal to the channel UUID |
 | Relay | local Buzz relay at `127.0.0.1:3030` |
 
@@ -39,9 +39,9 @@ All three events were stored by the real relay as NIP-29 kind-9 messages with pr
 
 | Message | Event ID | Domain ID | Author |
 |---|---|---|---|
-| `payment_intent` | `bddaa1a323bb06fce401cba2346beb6d87656b4c179caf9425df3ce6fd1fb107` | `16b013f077fcc581bd32112627a961a6132a7c2f5b1861a1bb847e969082f14f` | Alice |
-| `payment_quote` | `791dd59a24fb4a43ef31770e6a243ec281a9057f38e79939f607a552c44a8d34` | `27fc5faae89ba8c082c5978effd3c5d9b99b5aab7f9f3c4d1adbd56a2542cbd6` | Bob |
-| `payment_receipt` | `e4db7082868fa5a181cea7c250ba0d07fea100e822ea42fee680a5337f5e5b6a` | `5f21a755bd886618fda51f2173eecf1345697eaa9f24236f4edf25dcea2f9948` | Bob |
+| `payment_intent` | `bddaa1a3...` | `16b013f0...` | Alice |
+| `payment_quote` | `791dd59a...` | `27fc5faa...` | Bob |
+| `payment_receipt` | `e4db7082...` | `5f21a755...` | Bob |
 
 The intent requested `amount_sat=2100` and `max_fee_sat=0`. The quote carried a real BOLT-11 receive instruction, `rail=lightning`, and `fee_sat=0`. The quote identifier is `hermes-payments-testnet-quote-1785586627`; the legacy `testnet` label is an application idempotency label and does not mean Bitcoin testnet3 was used. The network for this run was Signet.
 

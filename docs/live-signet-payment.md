@@ -48,14 +48,14 @@ Only the public prefix is included here; the full reference remains in the local
 Alice was funded through two confirmed Signet faucet transactions:
 
 ```text
-5b27d3e57263902496e13e29eda55f7617851fc57326b18e47555be2241bef7d
-7e8439fcf0a3c0ce1025ffa234526e67a3de49e2ff952896f254d696ae5fd01e
+5b27d3e5...
+7e8439fc...
 ```
 
 Both deposits were confirmed at block height `315704`. Wavelength then consumed the deposit output in the boarding transaction:
 
 ```text
-4072a34ce643b0345f1ead1d7aba992c973358eaa9fa21c5f61f44dd1932268e
+4072a34c...
 ```
 
 That boarding transaction was confirmed at block height `315705`. The persistent Alice wallet subsequently reported:
@@ -66,7 +66,7 @@ pending_in_sat=0
 credit_available_sat=0
 ```
 
-The on-chain transactions above are **bootstrap evidence**. The 2100-sat agent payment itself was detected as wallet activity and used the `in_ark` route reported by Wavelength; it was not an on-chain payment to Bob.
+Only txid prefixes are included in this document; the full references remain in the local activity logs. The on-chain transactions above are **bootstrap evidence**. The 2100-sat agent payment itself was detected as wallet activity and used the `in_ark` route reported by Wavelength; it was not an on-chain payment to Bob.
 
 ## What this proves
 
