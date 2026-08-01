@@ -65,8 +65,10 @@ wallet=alice id=<reference> kind=send status=complete amount_sat=-2100 fee_sat=0
 wallet=bob id=<reference> kind=receive status=complete amount_sat=2100 fee_sat=0
 ```
 
-The reference must match across the two activity views. The exact live result is
-recorded in [`../../docs/live-signet-payment.md`](../../docs/live-signet-payment.md).
+The reference must match across the two activity views. The narrow settlement result is
+recorded in [`../../docs/live-signet-payment.md`](../../docs/live-signet-payment.md),
+and the combined Buzz + Wavelength Signet evidence is in
+[`../../docs/live-signet-buzz-vertical.md`](../../docs/live-signet-buzz-vertical.md).
 
 ## Configuration
 

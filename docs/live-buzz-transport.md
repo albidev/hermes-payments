@@ -5,7 +5,7 @@
 **Date:** 2026-08-01<br>
 **Channel lifetime:** ephemeral, 300 seconds
 
-This run exercised the checked-in Python `SubprocessExecutor` against a real compiled Buzz CLI and a real local Buzz relay. Two ephemeral Nostr identities were generated inside the shell; their private keys were never printed or written to the repository.
+This run exercised the checked-in Python `SubprocessExecutor` against a real compiled Buzz CLI and a real local Buzz relay. Two ephemeral Nostr identities were generated inside the shell; their private keys were never printed or written to the repository. It is a transport-only smoke test; the later [combined Signet vertical](live-signet-buzz-vertical.md) adds a real invoice, Wavelength settlement, reconciliation, and recipient receipt.
 
 ## Infrastructure
 
@@ -67,4 +67,4 @@ The intent carried `amount_sat=2100` and `max_fee_sat=0`. The quote carried `rai
 - The quote used a test-only receive instruction and must not be treated as a payable invoice.
 - This is not yet the two-Hermes-process regtest gate.
 
-The next step is to bind this exact Buzz exchange to two isolated Hermes processes and a real Wavelength regtest settlement. Only Bob's independently verified incoming activity may trigger a real `PaymentReceipt`.
+This document remains intentionally transport-only: its quote used a test-only receive instruction and no settlement occurred in that smoke test. The later [combined Signet vertical](live-signet-buzz-vertical.md) demonstrates the same kind-9 boundary with a real invoice, reconciled Wavelength settlement, and a `PaymentReceipt` emitted only after Bob's verified incoming activity. The two-deployed-Hermes-process regtest gate and restart testing remain open.

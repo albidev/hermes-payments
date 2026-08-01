@@ -18,22 +18,22 @@ The suite does not prove that a real Buzz binary or relay is available, that two
 
 ## P6 live gate
 
-The first live Wavelength settlement is now separately verified on Signet. The kind-9 Buzz transport is also verified against a real local relay. These close the wallet/operator/recipient and Buzz transport sub-gates, but not the full two-Hermes settlement gate.
+The live evidence now covers a real Signet coordination-and-settlement vertical: kind-9 `PaymentIntent`, `PaymentQuote`, and post-settlement `PaymentReceipt` crossed a real local Buzz relay, while Wavelength settled the corresponding 2100-sat invoice. The raw `Send` initially returned `PENDING`; sender and recipient activity were reconciled without retry. This closes the Signet evidence path, but not the full regtest deployment gate.
 
 | Gate | Evidence required | Status |
 |---|---|---:|
-| Two isolated Hermes instances | Separate process/config/state roots | Open |
-| Real Buzz transport | Signed kind-9 event observed by both sides | **Verified on local relay** — [live evidence](live-buzz-transport.md) |
-| Funded sender | Spendable wallet balance, not merely pending funding | **Verified on Signet** — [live evidence](live-signet-payment.md) |
-| Fresh prepared intent | `PrepareSend` result inspected and approved | **Verified on Signet** — [live evidence](live-signet-payment.md) |
-| Exact execution | Raw `Send` consumes that prepared ID | **Verified on Signet** — [live evidence](live-signet-payment.md) |
-| Recipient receipt | `activity --kind recv` matches reference and amount | **Verified on Signet** — [live evidence](live-signet-payment.md) |
-| Recovery | Pending/ambiguous path manually reconciled | Open |
+| Two isolated Hermes instances | Separate Hermes processes/config/state roots | Open |
+| Real Buzz transport | Signed kind-9 events observed by both sides | **Verified on Signet** — [combined live evidence](live-signet-buzz-vertical.md) |
+| Funded sender | Spendable wallet balance, not merely pending funding | **Verified on Signet** — [combined live evidence](live-signet-buzz-vertical.md) |
+| Fresh prepared intent | `PrepareSend` result inspected and approved | **Verified on Signet** — exact `prepared_hash` recorded in [live evidence](live-signet-buzz-vertical.md) |
+| Exact execution | Raw `Send` consumes that prepared ID | **Verified and reconciled on Signet** — [live evidence](live-signet-buzz-vertical.md) |
+| Recipient receipt | `activity --kind recv` matches reference and amount | **Verified on Signet** — Bob's kind-9 receipt is recorded in [live evidence](live-signet-buzz-vertical.md) |
+| Recovery | Restart/recovery after pending or ambiguous dispatch | **Partial** — manual activity reconciliation verified; restart recovery remains open |
 
-The remaining work is to carry the same lifecycle through two real Hermes processes, bind the quote to a real Wavelength regtest prepare/execute operation, and publish a receipt only after Bob verifies incoming activity. Restart/reconciliation behavior remains open.
+The remaining work is to carry the lifecycle through two real Hermes processes, bind it to a real Wavelength regtest settlement, and exercise restart/reconciliation behavior after a daemon restart. The Signet run is evidence, not a production or mainnet claim.
 
 ## Signet evidence history
 
-The earlier pre-settlement observation was a pending bootstrap balance and a complete `in_ark` quote. That observation is superseded by the completed run recorded in [live-signet-payment.md](live-signet-payment.md), which includes confirmed boarding, exact `SendPrepared` execution, and matching complete Alice/Bob activity.
+The earlier pre-settlement observation was a pending bootstrap balance and a complete `in_ark` quote. It is superseded as the current Signet status by the completed evidence in [live-signet-buzz-vertical.md](live-signet-buzz-vertical.md), which includes kind-9 coordination, exact prepared execution, manual reconciliation, matching complete Alice/Bob activity, and a Bob-authored receipt.
 
-The live evidence still does **not** claim that Buzz and Wavelength were combined in the same Signet run. The separate [live Buzz transport evidence](live-buzz-transport.md) proves the signed kind-9 exchange against a local relay; it intentionally published no receipt because no settlement occurred in that run.
+The original narrow Wavelength-only settlement remains available in [live-signet-payment.md](live-signet-payment.md). The separate [live Buzz transport evidence](live-buzz-transport.md) remains a transport-only smoke test with no settlement. The combined document is the authoritative Signet vertical evidence, while the full two-Hermes regtest and restart gate remains open.

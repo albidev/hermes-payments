@@ -5,7 +5,7 @@
 **Date:** 2026-08-01<br>
 **Repository commit before the run:** `ec42184`
 
-This document records the first successful live Wavelength payment used by the Hermes Payments project. It is evidence for the **settlement path**, not a claim that Buzz and Wavelength were combined in that Signet run. The separate [live Buzz transport proof](live-buzz-transport.md) covers signed kind-9 transport on a local relay.
+This document records the first successful live Wavelength payment used by the Hermes Payments project. It is the narrow **settlement-only** proof. The later [combined Signet Buzz + Wavelength vertical](live-signet-buzz-vertical.md) records a real kind-9 intent/quote/receipt exchange bound to a separate live settlement.
 
 ## Result
 
@@ -78,12 +78,12 @@ The on-chain transactions above are **bootstrap evidence**. The 2100-sat agent p
 - The payment reference matched on sender and recipient activity logs.
 - The live route selected by Wavelength was reported as `in_ark`.
 
-## What this does not prove
+## What this original settlement-only run does not prove
 
-- A real Buzz binary or live Buzz channel was used in this run.
-- Two Hermes processes exchanged a real kind-9 `PaymentIntent`, `PaymentQuote`, or `PaymentReceipt`.
+- A real Buzz binary or live Buzz channel was used in this particular run.
+- Two Hermes processes exchanged a real kind-9 `PaymentIntent`, `PaymentQuote`, or `PaymentReceipt` in this particular run.
 - The checked-in Python `WavelengthAdapter` supports Signet; it remains intentionally regtest-only.
 - Restart/reconciliation behavior was exercised after an ambiguous live dispatch.
 - Any mainnet or production safety claim.
 
-The next gate is therefore the **live Buzz-mediated protocol path**, followed by the real-regtest two-daemon gate. The settlement path is green; the agent coordination path is still a separate engineering task.
+The combined live Signet coordination and settlement evidence is now recorded separately in [live-signet-buzz-vertical.md](live-signet-buzz-vertical.md).

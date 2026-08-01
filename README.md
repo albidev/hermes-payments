@@ -14,7 +14,7 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 - A Buzz transport boundary using NIP-29 kind-9 channel messages.
 - A regtest-only Wavelength adapter using the exact prepared send intent returned by the raw RPC surface.
 - A deterministic two-Hermes integration proof built entirely from fakes.
-- A recorded live Signet Wavelength/Ark settlement proof, kept separate from the protocol proof.
+- A recorded live Signet Wavelength/Ark settlement proof, plus a combined live Buzz kind-9 coordination and receipt proof.
 
 ## What it is not
 
@@ -23,7 +23,7 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 - A secret manager.
 - An autonomous spending agent.
 - A mainnet-ready payment service.
-- The checked-in P5 suite does not call Buzz, Wavelength, Docker, or the network. The separate [live Signet evidence](docs/live-signet-payment.md) records a real Wavelength wallet-to-wallet settlement, but not the full Buzz-mediated Hermes protocol.
+- The checked-in P5 suite does not call Buzz, Wavelength, Docker, or the network. The separate [combined Signet evidence](docs/live-signet-buzz-vertical.md) records a real kind-9 intent/quote/receipt exchange bound to a real Wavelength settlement. It is still not a production or mainnet claim.
 
 ## Current status
 
@@ -33,10 +33,11 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 | Rail-neutral policy/state core | Implemented | `src/hermes_payments/policy.py`, `state_machine.py` |
 | Buzz transport | Implemented | NIP-29 kind 9, `src/hermes_payments/transport.py` |
 | Wavelength adapter | Implemented for **regtest only** | Raw `PrepareSend`/`Send`, recipient-side `activity --kind recv` |
-| Live Signet Wavelength settlement | Verified externally | [Live evidence](docs/live-signet-payment.md) |
-| Live Buzz kind-9 transport | Verified on local relay | [Live evidence](docs/live-buzz-transport.md) |
+| Live Signet Wavelength settlement | Verified externally | [Settlement evidence](docs/live-signet-payment.md) |
+| Live Buzz + Wavelength Signet vertical | Verified externally; pending two-Hermes regtest gate | [Combined live evidence](docs/live-signet-buzz-vertical.md) |
+| Live Buzz kind-9 transport | Verified on local relay | [Transport evidence](docs/live-buzz-transport.md) |
 | Two-Hermes deterministic proof | Implemented and tested | `tests/test_two_hermes_e2e.py` |
-| Two real daemons + real Buzz channel | Open operational gate | `docs/VERIFICATION.md` |
+| Two deployed Hermes processes + regtest settlement | Open operational gate | `docs/VERIFICATION.md` |
 | Ark as a first-class protocol rail | Intentionally open | `docs/RAILS.md` |
 
 The repository currently models a Lightning invoice as the receive instruction. Wavelength may select an internal route such as `in_ark` while preparing that invoice; that internal route is not yet exposed as a distinct wire-level `Rail` value. This distinction is documented rather than hidden. See [Rails and settlement semantics](docs/RAILS.md).
@@ -114,6 +115,7 @@ The test suite is deterministic and offline. It uses `FakeExecutor` for Buzz and
     ├── TESTING.md
     ├── VERIFICATION.md
     ├── live-signet-payment.md
+    ├── live-signet-buzz-vertical.md
     ├── live-buzz-transport.md
     └── diagrams/
 ```
@@ -133,7 +135,8 @@ The test suite is deterministic and offline. It uses `FakeExecutor` for Buzz and
 | [Decisions](docs/DECISIONS.md) | Architecture decision records and unresolved choices |
 | [Glossary](docs/GLOSSARY.md) | Terms used across the protocol and integrations |
 | [Verification status](docs/VERIFICATION.md) | What is proved, what is not, and the remaining live gates |
-| [Live Signet evidence](docs/live-signet-payment.md) | Reproducible record of the first real Wavelength/Ark wallet settlement |
+| [Live Signet settlement](docs/live-signet-payment.md) | Narrow Wavelength/Ark wallet settlement proof |
+| [Live Signet Buzz + Wavelength vertical](docs/live-signet-buzz-vertical.md) | Combined kind-9 coordination, prepared execution, reconciliation, and receipt evidence |
 | [Live Buzz evidence](docs/live-buzz-transport.md) | Real local relay proof for signed kind-9 intent and quote exchange |
 | [Diagrams](docs/diagrams/README.md) | Mermaid source plus a standalone visual architecture diagram |
 

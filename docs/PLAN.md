@@ -18,15 +18,15 @@ Prove one replay-safe, human-approved payment between two Hermes identities, coo
 
 | Gate | Requirement | Status |
 |---|---|---:|
-| P6 | Two real daemons, real Buzz channel, funded sender, real receipt, recovery evidence | Open |
+| P6 | Two real Hermes processes, real Buzz channel, funded sender, real receipt, recovery evidence | **Partial on Signet; regtest and restart recovery open** |
 
-P5 is a deterministic integration proof. P6 is a deployment proof and cannot be declared complete by adding more fake-executor tests.
+P5 is a deterministic integration proof. The combined Signet run is external evidence for the coordination and settlement path, but P6 remains open until the deployment/restart requirements are exercised with two real Hermes processes and a real Wavelength regtest environment.
 
 ## Live settlement milestone
 
-The wallet settlement sub-gate is complete on Signet. The Buzz kind-9 transport sub-gate is complete against a real local relay. See [live-signet-payment.md](live-signet-payment.md) and [live-buzz-transport.md](live-buzz-transport.md) for the two separate proofs.
+The Signet evidence now covers the full observable lifecycle: real kind-9 `PaymentIntent` and `PaymentQuote`, a real BOLT-11 invoice, local approval bound to the prepared payload, raw Wavelength execution, manual reconciliation of an initial `PENDING` result, matching Alice/Bob activity, and a Bob-authored `PaymentReceipt`. See [live-signet-buzz-vertical.md](live-signet-buzz-vertical.md). The original narrow proofs remain available in [live-signet-payment.md](live-signet-payment.md) and [live-buzz-transport.md](live-buzz-transport.md).
 
-The full P6 gate remains open until the same lifecycle is driven by two Hermes processes over a real Buzz channel, bound to a real Wavelength regtest settlement, followed by recovery testing.
+The full P6 gate remains open until the same lifecycle is driven by two Hermes processes over a real Buzz channel, bound to a real Wavelength regtest settlement, followed by restart/recovery testing.
 
 ## Rail evolution
 
