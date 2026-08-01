@@ -12,8 +12,8 @@ credentials or external services.  They cover:
 
 from __future__ import annotations
 
-import sys
 import os
+import sys
 
 # Ensure src is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -21,8 +21,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import pytest
 from fixtures import (
     NOW,
-    ONE_HOUR,
-    APPROVER_PUBKEY,
     RECIPIENT_PUBKEY,
     SENDER_PUBKEY,
     make_approval,
@@ -54,12 +52,10 @@ from hermes_payments.models import (
 from hermes_payments.state_machine import (
     TERMINAL_STATES,
     PaymentState,
-    TransitionResult,
     can_transition,
     reachable_states,
     transition,
 )
-
 
 # ===========================================================================
 # 1. State machine correctness
@@ -265,9 +261,6 @@ class TestIdempotency:
 
     def test_no_replay_settled(self):
         """Once settled, same intent cannot settle again."""
-        i = make_intent()
-        q = make_quote(i)
-        r = make_receipt(i, q)
         # Simulate: the receipt exists, a second receipt with same intent_id
         # would be a duplicate.  The state machine enforces this:
         state = PaymentState.SETTLED
@@ -308,7 +301,8 @@ class TestSerialization:
     def test_id_matches_canonical_hash(self):
         """compute_id produces SHA-256 of canonical JSON (excluding id field)."""
         i = make_intent()
-        import hashlib, json
+        import hashlib
+        import json
         raw = i.model_dump(exclude_none=True, mode="python")
         raw.pop("id", None)  # id is excluded from its own hash
         canonical = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -397,7 +391,6 @@ class TestEnvelope:
 
     def test_all_payment_kinds_are_nine(self):
         """All payment message kinds use NIP-29 kind 9."""
-        from hermes_payments.envelope import KIND_MAP
         for kind in KIND_MAP.values():
             assert kind == 9
 
@@ -503,7 +496,6 @@ class TestP3TransportBoundary:
 
     def test_approval_not_in_kind_map(self):
         """PaymentApproval has no Nostr kind assigned."""
-        from hermes_payments.envelope import KIND_MAP
         kind_names = [k.value for k in KIND_MAP.keys()]
         assert "approval" not in kind_names
 
@@ -546,7 +538,6 @@ class TestP3TransportBoundary:
 
     def test_kind_map_all_nine(self):
         """Every payment type maps to kind 9."""
-        from hermes_payments.envelope import KIND_MAP
         for kind in KIND_MAP.values():
             assert kind == 9
 
@@ -554,9 +545,13 @@ class TestP3TransportBoundary:
 
     def test_envelope_has_protocol_and_version(self):
         """PaymentEnvelope carries protocol identifier and version."""
-        from hermes_payments.envelope import decode_content, encode_content
-        from hermes_payments.envelope import PROTOCOL_ID, PROTOCOL_VERSION
         import json
+
+        from hermes_payments.envelope import (
+            PROTOCOL_ID,
+            PROTOCOL_VERSION,
+            encode_content,
+        )
         intent = make_intent()
         content = encode_content(intent)
         data = json.loads(content)
@@ -565,8 +560,9 @@ class TestP3TransportBoundary:
 
     def test_envelope_rejects_unknown_protocol(self):
         """Envelope with wrong protocol is rejected."""
-        from hermes_payments.envelope import decode_content
         import json
+
+        from hermes_payments.envelope import decode_content
         data = {
             "protocol": "wrong-protocol",
             "version": "1",
@@ -578,8 +574,9 @@ class TestP3TransportBoundary:
 
     def test_envelope_rejects_wrong_version(self):
         """Envelope with wrong version is rejected."""
-        from hermes_payments.envelope import decode_content
         import json
+
+        from hermes_payments.envelope import decode_content
         data = {
             "protocol": "hermes-payments",
             "version": "99",
@@ -594,7 +591,9 @@ class TestP3TransportBoundary:
     def test_validate_rejects_non_nine_kind(self):
         """Events with kind != 9 are rejected."""
         from hermes_payments.transport import (
-            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            EnvelopeValidationError,
+            RawBuzzEvent,
+            validate_received_event,
         )
         event = RawBuzzEvent(
             id="ev-999", pubkey="aa" * 32, kind=1,
@@ -606,8 +605,10 @@ class TestP3TransportBoundary:
     def test_validate_rejects_wrong_channel(self):
         """Events with wrong h-tag channel are rejected."""
         from hermes_payments.transport import (
-            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            EnvelopeValidationError,
+            RawBuzzEvent,
             encode_content,
+            validate_received_event,
         )
         intent = make_intent()
         event = RawBuzzEvent(
@@ -621,8 +622,10 @@ class TestP3TransportBoundary:
     def test_validate_rejects_expired_message(self):
         """Received messages past their expiry are rejected."""
         from hermes_payments.transport import (
-            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            EnvelopeValidationError,
+            RawBuzzEvent,
             encode_content,
+            validate_received_event,
         )
         intent = make_intent(expires_at=NOW - 1)
         event = RawBuzzEvent(
@@ -638,8 +641,10 @@ class TestP3TransportBoundary:
     def test_validate_rejects_identity_mismatch(self):
         """Received intent with wrong author pubkey is rejected."""
         from hermes_payments.transport import (
-            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            EnvelopeValidationError,
+            RawBuzzEvent,
             encode_content,
+            validate_received_event,
         )
         intent = make_intent()
         event = RawBuzzEvent(
@@ -655,7 +660,9 @@ class TestP3TransportBoundary:
     def test_validate_rejects_invalid_json(self):
         """Received events with non-JSON content are rejected."""
         from hermes_payments.transport import (
-            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            EnvelopeValidationError,
+            RawBuzzEvent,
+            validate_received_event,
         )
         event = RawBuzzEvent(
             id="ev-bad", pubkey="aa" * 32, kind=9,
@@ -677,8 +684,10 @@ class TestP3TransportBoundary:
     def test_receipt_author_must_match_recipient(self):
         """Receipt authored by non-recipient is rejected."""
         from hermes_payments.transport import (
-            RawBuzzEvent, validate_received_event, EnvelopeValidationError,
+            EnvelopeValidationError,
+            RawBuzzEvent,
             encode_content,
+            validate_received_event,
         )
         intent = make_intent()
         quote = make_quote(intent)

@@ -26,7 +26,6 @@ from typing import Dict, FrozenSet, Optional, Set, Tuple
 
 from .models import PaymentState
 
-
 # ---------------------------------------------------------------------------
 # Transition table
 # ---------------------------------------------------------------------------
@@ -91,20 +90,6 @@ TERMINAL_STATES: FrozenSet[PaymentState] = frozenset({
 
 
 # ---------------------------------------------------------------------------
-# Invariants
-# ---------------------------------------------------------------------------
-
-INVARIANT_DESCRIPTIONS = {
-    "no_double_settle": "Once SETTLED, no further transition is possible.",
-    "no_replay_approval": "Each (intent_id, quote_id, prepared_hash) tuple may be approved at most once.",
-    "expiry_guard": "Any non-terminal state transitions to EXPIRED when expires_at is reached (except EXECUTING → RECONCILIATION_REQUIRED).",
-    "adapter_boundary": "Adapter errors from EXECUTING transition to RECONCILIATION_REQUIRED, not FAILED.",
-    "approval_requires_prepared": "APPROVED can only be reached from PREPARED (prepare must have run).",
-    "executing_no_terminal_error": "EXECUTING is never terminally marked as EXPIRED or FAILED — ambiguous results require manual reconciliation.",
-}
-
-
-# ---------------------------------------------------------------------------
 # State machine API
 # ---------------------------------------------------------------------------
 
@@ -113,7 +98,7 @@ INVARIANT_DESCRIPTIONS = {
 class TransitionResult:
     ok: bool
     new_state: PaymentState
-    error: Optional[str] = None  # noqa: F821 (forward ref OK in dataclass)
+    error: Optional[str] = None
 
 
 def can_transition(current: PaymentState, trigger: str) -> bool:

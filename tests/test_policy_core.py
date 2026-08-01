@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 
 import pytest
 
@@ -22,10 +21,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 
 from fixtures import (
     APPROVER_PUBKEY,
-    RECIPIENT_PUBKEY,
-    SENDER_PUBKEY,
     NOW,
     ONE_HOUR,
+    RECIPIENT_PUBKEY,
+    SENDER_PUBKEY,
     make_approval,
     make_intent,
     make_quote,
@@ -33,8 +32,8 @@ from fixtures import (
 )
 
 from hermes_payments.adapter import (
-    AmbiguousResult,
     AdapterError,
+    AmbiguousResult,
     ExecuteResult,
     PrepareResult,
     RailReceiveInstruction,
@@ -44,26 +43,22 @@ from hermes_payments.adapter import (
 from hermes_payments.models import (
     BuzzIdentity,
     PaymentApproval,
-    PaymentIntent,
-    PaymentQuote,
     PaymentReceipt,
     Rail,
     compute_id,
     compute_prepared_hash,
 )
-from hermes_payments.state_machine import PaymentState, TransitionResult, transition
-
 from hermes_payments.policy import (
     ApprovalRejected,
     AuditLog,
     IdempotencyStore,
     PaymentOrchestrator,
     RecipientRejected,
-    SubmissionRejected,
     StateError,
+    SubmissionRejected,
     UnknownIntent,
 )
-
+from hermes_payments.state_machine import PaymentState, transition
 
 # ---------------------------------------------------------------------------
 # Stub adapter for testing — no real network I/O
@@ -159,7 +154,10 @@ def _new_orchestrator(**kwargs):
     allowlist_rail = kwargs.pop("rail_allowlist", None)
     clock = kwargs.pop("clock", None)
     if clock is None:
-        clock = lambda: NOW
+        def default_clock():
+            return NOW
+
+        clock = default_clock
     return PaymentOrchestrator(
         adapter=adapter,
         store_path=store_path,
@@ -341,7 +339,7 @@ class TestApprovalBinding:
         orch.submit(intent)
         quote = make_quote(intent)
         orch.receive_quote(quote)
-        prep = orch.prepare()
+        orch.prepare()
         # approval with wrong hash
         bad_approval = make_approval(
             intent, quote, prepared_hash="dead" + "beef" * 15
@@ -939,7 +937,7 @@ class TestP2Regression:
         rec = orch._intents[intent.id]
         rec.state = PaymentState.RECONCILIATION_REQUIRED
         # Receive the receipt — should transition via state machine
-        receipt = orch.receive_receipt(make_receipt(intent, quote))
+        orch.receive_receipt(make_receipt(intent, quote))
         assert orch.state(intent.id) == PaymentState.SETTLED
 
     # -- (2) check_expired transitions EXECUTING → RECONCILIATION_REQUIRED before raising --
@@ -1071,7 +1069,7 @@ class TestP2Regression:
             original = json.load(f)
         assert intent1.id in original["intents"]
         # Patch json.dump to raise an error during save
-        def failing_dump(*args, **kwargs):
+        def failing_dump(*_args, **_kwargs):
             raise RuntimeError("simulated write failure")
         with mock_patch("hermes_payments.policy.json.dump", failing_dump):
             with pytest.raises(RuntimeError, match="simulated write failure"):
@@ -1254,7 +1252,6 @@ class TestP2Regression:
             orch.execute()
         # Force to FAILED
         orch._intents[intent.id].state = PaymentState.FAILED
-        state_before = orch.state(intent.id)
         receipt = make_receipt(intent, quote)
         with pytest.raises(StateError, match="cannot receive receipt"):
             orch.receive_receipt(receipt)

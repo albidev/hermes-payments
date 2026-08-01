@@ -53,24 +53,23 @@ from __future__ import annotations
 
 import os
 import sys
+
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 
 from fixtures import (
-    NOW,
-    ONE_HOUR,
     APPROVER_PUBKEY,
+    NOW,
     RECIPIENT_PUBKEY,
     SENDER_PUBKEY,
     make_intent,
     make_quote,
     make_receipt,
 )
+
 from hermes_payments.adapter import (
-    AdapterError,
-    AmbiguousResult,
     FakeWavecliExecutor,
     WavelengthAdapter,
 )
@@ -95,7 +94,6 @@ from hermes_payments.transport import (
     RawBuzzEvent,
     validate_received_event,
 )
-
 
 # ---------------------------------------------------------------------------
 # Constants

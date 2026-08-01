@@ -10,8 +10,12 @@ permissions:
 
 jobs:
   test:
-    name: Python tests
+    name: Python tests (${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -19,7 +23,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: Install package and development dependencies
@@ -27,3 +31,9 @@ jobs:
 
       - name: Run test suite
         run: pytest -q
+
+      - name: Run Ruff checks
+        run: ruff check src tests
+
+      - name: Run mypy checks
+        run: mypy src --ignore-missing-imports --no-incremental

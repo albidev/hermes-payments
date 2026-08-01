@@ -39,15 +39,11 @@ from typing import Callable, List, Optional
 
 from .envelope import WIRE_KIND, decode_content, encode_content
 from .models import (
-    BuzzIdentity,
-    MessageKind,
-    PaymentApproval,
     PaymentIntent,
     PaymentMessage,
     PaymentQuote,
     PaymentReceipt,
 )
-
 
 # ---------------------------------------------------------------------------
 # Raw event from Buzz CLI

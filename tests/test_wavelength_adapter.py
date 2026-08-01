@@ -21,16 +21,15 @@ import json
 import os
 import sys
 import time
+
 import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 
 from fixtures import (
     NOW,
     ONE_HOUR,
-    RECIPIENT_PUBKEY,
-    make_intent,
-    make_quote,
 )
 
 from hermes_payments.adapter import (
@@ -38,15 +37,14 @@ from hermes_payments.adapter import (
     AmbiguousResult,
     FakeWavecliExecutor,
     PrepareResult,
-    ReceiptVerifyResult,
     SettlementAdapter,
-    WavelengthAdapter,
     WavecliExecutor,
-    _build_wavecli_activity_cmd,
+    WavelengthAdapter,
     _build_raw_rpc_cmd,
+    _build_wavecli_activity_cmd,
+    _parse_activity_entry,
     _parse_prepare_response,
     _parse_send_response,
-    _parse_activity_entry,
     redact_sensitive,
 )
 from hermes_payments.models import (
@@ -1029,6 +1027,11 @@ class TestRedaction:
 
 
 class TestStrictParsing:
+    def test_parse_prepare_rejects_non_object(self):
+        """_parse_prepare_response rejects a non-object JSON response."""
+        with pytest.raises(AdapterError, match="expected object"):
+            _parse_prepare_response([])
+
     def test_parse_prepare_rejects_empty_intent_id(self):
         """_parse_prepare_response rejects empty send_intent_id."""
         with pytest.raises(AdapterError, match="empty send_intent_id"):
@@ -1085,6 +1088,11 @@ class TestStrictParsing:
         """_parse_send_response rejects SendResponse without entry."""
         with pytest.raises(AdapterError, match="missing 'entry'"):
             _parse_send_response({"actual_amount_sat": 100})
+
+    def test_parse_send_rejects_non_object(self):
+        """_parse_send_response rejects a non-object JSON response."""
+        with pytest.raises(AdapterError, match="expected object"):
+            _parse_send_response(None)
 
     def test_parse_send_rejects_empty_entry_id(self):
         """_parse_send_response rejects entry with empty id."""

@@ -23,7 +23,7 @@ This module is the adapter boundary between protocol domain and transport.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Literal, Optional, Type, Union
+from typing import Any, Dict, List, Literal, Optional, Type
 
 from pydantic import BaseModel, Field
 
@@ -31,7 +31,6 @@ from .models import (
     MessageKind,
     PaymentApproval,
     PaymentMessage,
-    PaymentReceipt,
 )
 
 # ---------------------------------------------------------------------------
@@ -60,7 +59,8 @@ def _get_model_map() -> Dict[str, Type[PaymentMessage]]:
     """Lazy-loaded map from envelope type string to domain model class."""
     global _MODEL_MAP
     if _MODEL_MAP is None:
-        from .models import PaymentIntent, PaymentQuote, PaymentReceipt as PR
+        from .models import PaymentIntent, PaymentQuote
+        from .models import PaymentReceipt as PR
 
         _MODEL_MAP = {
             MessageKind.INTENT.value: PaymentIntent,
@@ -254,23 +254,3 @@ def _build_tags(message: PaymentMessage) -> List[List[str]]:
     tags.append(["intent", getattr(message, "intent_id", message.id)])
 
     return tags
-
-
-# ---------------------------------------------------------------------------
-# Status event (lightweight state change notification)
-# ---------------------------------------------------------------------------
-
-
-class StatusEvent(BaseModel):
-    """Lightweight state-change event for audit trail.
-
-    Not a PaymentMessage — this is a separate Buzz event that
-    records state transitions for observability.
-    """
-
-    intent_id: str
-    old_state: str
-    new_state: str
-    trigger: str
-    timestamp: int = Field(..., description="Unix epoch seconds")
-    actor: Optional[str] = Field(None, description="Pubkey of the actor who triggered the transition")

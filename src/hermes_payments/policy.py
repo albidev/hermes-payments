@@ -27,13 +27,12 @@ import json
 import os
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .adapter import (
     AdapterError,
     AmbiguousResult,
-    ExecuteResult,
     PrepareResult,
     SettlementAdapter,
 )
@@ -47,13 +46,9 @@ from .models import (
     compute_id,
 )
 from .state_machine import (
-    TERMINAL_STATES,
     PaymentState,
-    TransitionResult,
-    can_transition,
     transition,
 )
-
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -378,7 +373,6 @@ class PaymentOrchestrator:
         self._validate_recipient(intent.recipient)
 
         # Transition DRAFT → SUBMITTED
-        result = rec.state, "submit"
         tr = transition(rec.state, "submit")
         if not tr.ok:
             raise StateError(f"cannot submit: {tr.error}")

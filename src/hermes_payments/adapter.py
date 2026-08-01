@@ -56,7 +56,7 @@ import subprocess
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from .models import Rail, RailReceiveInstruction
 
@@ -307,7 +307,7 @@ class WavecliExecutor(ABC):
     """
 
     @abstractmethod
-    def run(self, cmd: List[str], *, timeout: int = 30) -> Dict[str, Any]:
+    def run(self, cmd: List[str], *, timeout: int = 30) -> Any:
         """Execute a wavecli command and return parsed JSON output.
 
         Parameters
@@ -319,8 +319,9 @@ class WavecliExecutor(ABC):
 
         Returns
         -------
-        dict
-            Parsed JSON output from wavecli.
+        Any
+            Parsed JSON output from wavecli.  Individual RPC parsers validate
+            the expected top-level shape.
 
         Raises
         ------
@@ -333,7 +334,7 @@ class WavecliExecutor(ABC):
 class SubprocessWavecliExecutor(WavecliExecutor):
     """Real executor that calls wavecli via subprocess."""
 
-    def run(self, cmd: List[str], *, timeout: int = 30) -> Dict[str, Any]:
+    def run(self, cmd: List[str], *, timeout: int = 30) -> Any:
         try:
             result = subprocess.run(
                 cmd,
@@ -388,7 +389,7 @@ class FakeWavecliExecutor(WavecliExecutor):
         """Set multiple sequential responses."""
         self._responses.extend(responses)
 
-    def run(self, cmd: List[str], *, timeout: int = 30) -> Dict[str, Any]:
+    def run(self, cmd: List[str], *, timeout: int = 30) -> Any:
         self._calls.append(cmd)
         if not self._responses:
             raise AdapterError("FakeWavecliExecutor: no response configured")
@@ -412,7 +413,7 @@ class FakeWavecliExecutor(WavecliExecutor):
 _RAW_RPC_SERVICE = "wavewalletrpc.WalletService"
 
 
-def _parse_prepare_response(data: Dict[str, Any]) -> Dict[str, Any]:
+def _parse_prepare_response(data: Any) -> Dict[str, Any]:
     """Parse a raw PrepareSendResponse from wavecli dev RPC.
 
     Returns dict with all binding fields:
@@ -422,6 +423,11 @@ def _parse_prepare_response(data: Dict[str, Any]) -> Dict[str, Any]:
 
     Raises AdapterError on missing send_intent_id or invalid data.
     """
+    if not isinstance(data, dict):
+        raise AdapterError(
+            f"PrepareSend returned expected object, got {type(data).__name__}"
+        )
+
     send_intent_id = data.get("send_intent_id", "")
     if not send_intent_id:
         raise AdapterError(
@@ -489,7 +495,7 @@ def _parse_prepare_response(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _parse_send_response(data: Dict[str, Any]) -> Dict[str, Any]:
+def _parse_send_response(data: Any) -> Dict[str, Any]:
     """Parse a raw SendResponse from wavecli dev RPC.
 
     SendResponse has: entry (WalletEntry) + actual_amount_sat.
@@ -498,6 +504,11 @@ def _parse_send_response(data: Dict[str, Any]) -> Dict[str, Any]:
     Returns dict with: entry_id, payment_hash, amount_sat, status.
     Raises AdapterError on missing/malformed data.
     """
+    if not isinstance(data, dict):
+        raise AdapterError(
+            f"Send returned expected object, got {type(data).__name__}"
+        )
+
     entry = data.get("entry")
     if not isinstance(entry, dict):
         raise AdapterError(
@@ -967,11 +978,15 @@ class WavelengthAdapter(SettlementAdapter):
         # structured response with an "entries" key.
         entries: List[Dict[str, Any]] = []
         if isinstance(data, list):
-            entries = data
+            entries = [entry for entry in data if isinstance(entry, dict)]
         elif isinstance(data, dict):
-            entries = data.get("entries", data.get("items", []))
-            if not entries and "entry" in data:
-                entries = [data["entry"]]
+            candidate = data.get("entries", data.get("items", []))
+            if not candidate and "entry" in data:
+                candidate = [data["entry"]]
+            if isinstance(candidate, list):
+                entries = [entry for entry in candidate if isinstance(entry, dict)]
+            elif isinstance(candidate, dict):
+                entries = [candidate]
 
         # ── Find matching entry by payment_hash ─────────────────────
         for entry in entries:

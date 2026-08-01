@@ -14,12 +14,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import time
 from enum import Enum
 from typing import Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -121,7 +119,7 @@ class PaymentIntent(BaseModel):
 
     @field_validator("expires_at")
     @classmethod
-    def _expiry_must_be_future(cls, v: int) -> int:
+    def _expiry_must_be_future(_cls, v: int) -> int:
         # Allow past values in fixtures/tests — validation is best-effort here.
         return v
 

@@ -25,7 +25,6 @@ import pytest
 from fixtures import (
     NOW,
     ONE_HOUR,
-    APPROVER_PUBKEY,
     RECIPIENT_PUBKEY,
     SENDER_PUBKEY,
     make_approval,
@@ -33,12 +32,13 @@ from fixtures import (
     make_quote,
     make_receipt,
 )
+
 from hermes_payments.envelope import (
+    PROTOCOL_ID,
+    PROTOCOL_VERSION,
     WIRE_KIND,
     decode_content,
     encode_content,
-    PROTOCOL_ID,
-    PROTOCOL_VERSION,
 )
 from hermes_payments.models import (
     BuzzIdentity,
@@ -49,18 +49,13 @@ from hermes_payments.models import (
     PaymentReceipt,
 )
 from hermes_payments.transport import (
-    BuzzExecutor,
     BuzzTransport,
-    BuzzTransportError,
     EnvelopeValidationError,
     FakeExecutor,
     RawBuzzEvent,
-    SendResult,
-    SubprocessExecutor,
-    validate_received_event,
     _channel_from_tags,
+    validate_received_event,
 )
-
 
 # Test channel UUID
 CHANNEL_UUID = "550e8400-e29b-41d4-a716-446655440000"

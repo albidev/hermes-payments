@@ -7,9 +7,6 @@ All pubkeys are fake 64-char hex strings.  No real keys.
 
 from __future__ import annotations
 
-import hashlib
-import time
-
 from hermes_payments.models import (
     BuzzIdentity,
     PaymentApproval,
