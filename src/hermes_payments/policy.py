@@ -37,7 +37,7 @@ from .adapter import (
     SettlementAdapter,
 )
 from .models import (
-    BuzzIdentity,
+    AgentIdentity,
     PaymentApproval,
     PaymentIntent,
     PaymentQuote,
@@ -316,7 +316,7 @@ class PaymentOrchestrator:
         if rec.quote_expires_at and now > rec.quote_expires_at:
             raise StateError(f"quote for intent {rec.intent.id} has expired")
 
-    def _validate_recipient(self, recipient: BuzzIdentity) -> None:
+    def _validate_recipient(self, recipient: AgentIdentity) -> None:
         if self._recipient_allowlist is not None:
             if not self._recipient_allowlist(recipient.pubkey):
                 raise RecipientRejected(

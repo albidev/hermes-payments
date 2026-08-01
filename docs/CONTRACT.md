@@ -1,7 +1,8 @@
 # Hermes Payments Protocol Contract
 
 **Protocol version:** `1`<br>
-**Transport:** Buzz NIP-29 kind-9 channel messages<br>
+**Peer boundary:** transport-neutral `PeerTransport`<br>
+**Current transport adapter:** Buzz NIP-29 kind-9 channel messages<br>
 **Current settlement instruction:** Lightning invoice<br>
 **Network scope of the checked-in Wavelength adapter:** regtest only
 
@@ -18,8 +19,8 @@ The sender requests a payment.
 | `protocol_version` | literal `"1"` | required |
 | `id` | 64-char hex string | SHA-256 of canonical fields excluding `id` |
 | `idempotency_key` | string | 1–128 characters |
-| `sender` | `BuzzIdentity` | required |
-| `recipient` | `BuzzIdentity` | required |
+| `sender` | `AgentIdentity` | required |
+| `recipient` | `AgentIdentity` | required |
 | `amount_sat` | integer | greater than zero |
 | `purpose` | string | 1–512 characters |
 | `max_fee_sat` | integer | zero or greater |
@@ -36,7 +37,7 @@ The recipient accepts the intent and supplies a receive instruction.
 | `id` | 64-char hex string | canonical ID |
 | `intent_id` | string | must reference the intent |
 | `quote_id` | string | 1–128 characters |
-| `recipient` | `BuzzIdentity` | event author must match |
+| `recipient` | `AgentIdentity` | event author must match |
 | `receive_instruction` | `RailReceiveInstruction` | required |
 | `fee_sat` | integer | within intent limit |
 | `fee_constraint` | `exact` or `max` | required |
@@ -65,7 +66,7 @@ Local human authorization. It is never serialized or transmitted.
 | `intent_id` | string | exact intent |
 | `quote_id` | string | exact quote |
 | `prepared_hash` | string | SHA-256 of opaque prepared payload |
-| `approver` | `BuzzIdentity` | local approver |
+| `approver` | `AgentIdentity` | local approver |
 | `created_at` | Unix seconds | approval time |
 
 ### PaymentReceipt
@@ -78,7 +79,7 @@ Recipient-authored settlement evidence.
 | `id` | 64-char hex string | canonical ID |
 | `intent_id` | string | exact intent |
 | `quote_id` | string | exact quote |
-| `recipient` | `BuzzIdentity` | event author must match |
+| `recipient` | `AgentIdentity` | event author must match |
 | `settlement_ref` | string | independently verifiable reference |
 | `amount_sat` | integer | must equal intent amount |
 | `fee_sat` | integer | zero or greater |
@@ -102,7 +103,30 @@ json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encod
 
 `prepared_hash` is SHA-256 of the opaque adapter payload. The payload is local to the sender and is never put in Buzz.
 
-## 3. Transport envelope
+## 3. Transport-neutral peer contract
+
+The application layer exchanges messages through `PeerTransport`, not through a Buzz-specific API:
+
+```python
+class PeerTransport(Protocol):
+    def send(self, message: PaymentMessage) -> str: ...
+    def receive(self, *, limit: int | None = None) -> list[PeerMessage]: ...
+```
+
+`PeerMessage` contains:
+
+| Field | Meaning |
+|---|---|
+| `message_id` | Stable identifier assigned by the concrete transport |
+| `message` | Validated `PaymentIntent`, `PaymentQuote`, or `PaymentReceipt` |
+| `author` | Domain author verified by the concrete transport |
+| `published_at` | Transport publication timestamp |
+
+`HermesPeer` composes this contract with local policy. It exposes explicit intent, quote, and receipt handoffs and never imports Buzz, Nostr, subprocesses, or settlement adapters. A transport duplicate may have a different `message_id` while carrying the same domain ID; policy idempotency handles that replay.
+
+`PaymentApproval` is not a `PaymentMessage`. Sending it through any `PeerTransport` is rejected.
+
+## 4. Buzz adapter envelope
 
 All transportable messages use one NIP-29 kind-9 event. Content is:
 
@@ -123,7 +147,7 @@ buzz messages send --channel <UUID> --content <content>
 
 The receive path requires event kind `9`, the expected channel UUID, valid protocol/version/schema, an unexpired message, and an event author matching the domain identity. `PaymentApproval` has no envelope type.
 
-## 4. Lifecycle
+## 5. Lifecycle
 
 ```mermaid
 stateDiagram-v2
@@ -156,7 +180,7 @@ stateDiagram-v2
 
 Terminal states are `SETTLED`, `FAILED`, `REJECTED`, `EXPIRED`, and `CANCELLED`. `RECONCILIATION_REQUIRED` is non-terminal because a verified receipt or manual confirmation may resolve it.
 
-## 5. Adapter contract
+## 6. Adapter contract
 
 ```python
 class SettlementAdapter(ABC):
@@ -177,7 +201,7 @@ Rules:
 - no adapter performs an automatic retry;
 - credentials remain outside the protocol.
 
-## 6. Invariants
+## 7. Invariants
 
 - Same intent fields and idempotency key produce the same ID.
 - Replaying an intent is a no-op.

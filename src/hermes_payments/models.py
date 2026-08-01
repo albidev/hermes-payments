@@ -32,10 +32,10 @@ PROTOCOL_VERSION: Literal["1"] = "1"
 
 
 class MessageKind(str, Enum):
-    """Discriminator for the domain message inside a Buzz envelope.
+    """Discriminator for the domain message inside a transport envelope.
 
     NOTE: PaymentApproval is NOT a transport message — it is strictly
-    local human authorisation and never enters a Buzz envelope.
+    local human authorisation and never enters a peer transport.
     """
     INTENT = "payment_intent"
     QUOTE = "payment_quote"
@@ -71,11 +71,21 @@ class Rail(str, Enum):
 # ---------------------------------------------------------------------------
 
 
-class BuzzIdentity(BaseModel):
-    """Compact representation of a Buzz/Nostr identity."""
+class AgentIdentity(BaseModel):
+    """Compact identity used by payment peers.
+
+    The current wire representation carries a 64-character public key.  The
+    payment domain deliberately does not name the transport that authenticates
+    it; Buzz/Nostr is only one possible adapter.
+    """
 
     pubkey: str = Field(..., min_length=64, max_length=64, description="Schnorr public key, hex")
     relay_url: Optional[str] = Field(None, description="Preferred relay URL (null = default community relay)")
+
+
+# Source-compatible alias for protocol v1 callers.  The wire shape is
+# unchanged; new code should use AgentIdentity rather than naming Buzz.
+BuzzIdentity = AgentIdentity
 
 
 class RailReceiveInstruction(BaseModel):
@@ -109,8 +119,8 @@ class PaymentIntent(BaseModel):
     protocol_version: Literal["1"] = Field(default=PROTOCOL_VERSION)
     id: str = Field(..., description="Deterministic ID: sha256 of canonical fields")
     idempotency_key: str = Field(..., min_length=1, max_length=128)
-    sender: BuzzIdentity
-    recipient: BuzzIdentity
+    sender: AgentIdentity
+    recipient: AgentIdentity
     amount_sat: int = Field(..., gt=0, description="Payment amount in satoshis")
     purpose: str = Field(..., min_length=1, max_length=512, description="Human-readable purpose")
     max_fee_sat: int = Field(..., ge=0, description="Maximum acceptable fee in satoshis")
@@ -128,7 +138,7 @@ class PaymentQuote(BaseModel):
     id: str = Field(..., description="Deterministic ID: sha256 of canonical fields")
     intent_id: str = Field(..., description="References the PaymentIntent.id")
     quote_id: str = Field(..., min_length=1, max_length=128, description="Recipient-assigned quote identifier")
-    recipient: BuzzIdentity
+    recipient: AgentIdentity
     receive_instruction: RailReceiveInstruction
     fee_sat: int = Field(..., ge=0, description="Quoted fee in satoshis")
     fee_constraint: Literal["exact", "max"] = Field(
@@ -141,8 +151,8 @@ class PaymentQuote(BaseModel):
 class PaymentApproval(BaseModel):
     """Human approval binding (intent_id, quote_id, prepared_hash).
 
-    This is the *only* message that authorises execution.  A Buzz
-    message/event is never, by itself, financial authorisation.
+    This is the *only* message that authorises execution.  A remote
+    transport message is never, by itself, financial authorisation.
     """
 
     protocol_version: Literal["1"] = Field(default=PROTOCOL_VERSION)
@@ -150,7 +160,7 @@ class PaymentApproval(BaseModel):
     intent_id: str = Field(..., description="References PaymentIntent.id")
     quote_id: str = Field(..., description="References PaymentQuote.quote_id")
     prepared_hash: str = Field(..., description="Hash of the prepared payload from adapter.prepare()")
-    approver: BuzzIdentity
+    approver: AgentIdentity
     created_at: int = Field(..., description="Unix epoch seconds")
 
 
@@ -167,7 +177,7 @@ class PaymentReceipt(BaseModel):
     id: str = Field(..., description="Deterministic ID: sha256 of canonical fields")
     intent_id: str = Field(..., description="References PaymentIntent.id")
     quote_id: str = Field(..., description="References PaymentQuote.quote_id")
-    recipient: BuzzIdentity = Field(..., description="Recipient identity; receipt is authored by this party")
+    recipient: AgentIdentity = Field(..., description="Recipient identity; receipt is authored by this party")
     settlement_ref: str = Field(..., description="Rail-specific settlement reference (e.g. payment_hash)")
     amount_sat: int = Field(..., gt=0, description="Settled amount in satoshis")
     fee_sat: int = Field(..., ge=0, description="Actual fee in satoshis")

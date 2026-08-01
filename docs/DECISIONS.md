@@ -53,3 +53,9 @@ A fresh Ark-capable wallet may need an on-chain deposit to board an operator or 
 **Status:** Accepted / follow-up open
 
 Wavelength can internally choose an Ark route for a Lightning invoice. The current protocol still exposes `Rail.LIGHTNING` and an invoice receive instruction. First-class Ark wire semantics require their own instruction, policy, fee, receipt, compatibility, and recovery contracts.
+
+## ADR-010 — Put a transport-neutral peer contract in front of Buzz
+
+**Status:** Accepted
+
+The Hermes-to-Hermes application flow depends on `PeerTransport`, not on Buzz commands or NIP-29 event details. `PeerMessage` carries the typed payment message plus transport ID, author, and publication timestamp. Buzz is the first concrete adapter and remains fully validated at its boundary; a future HTTP, WebSocket, Unix-socket, or other adapter can replace it without changing policy or peer orchestration. An in-memory transport proves the composition without pretending to be a live relay.

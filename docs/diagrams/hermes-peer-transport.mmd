@@ -1,0 +1,20 @@
+sequenceDiagram
+    participant A as Hermes A
+    participant PT as PeerTransport
+    participant T as Concrete adapter
+    participant B as Hermes B
+
+    A->>PT: PaymentIntent
+    PT->>T: send(typed message)
+    T->>B: transport-native delivery
+    B->>PT: PaymentQuote / PaymentReceipt
+    PT->>T: send(typed message)
+    T->>A: transport-native delivery
+
+    Note over PT,T: Today: Buzz kind-9 adapter
+    Note over PT,T: Tomorrow: HTTP, WebSocket, Unix socket, or another adapter
+    Note over A,B: HermesPeer never imports the concrete transport
+
+    rect rgb(24, 31, 48)
+        Note over A,B: PaymentApproval stays local to Hermes A
+    end

@@ -2,7 +2,7 @@
 
 **A policy-first, multi-rail payment protocol for Hermes agents.**
 
-Hermes Payments separates the part that decides **whether a payment is allowed** from the part that moves money. Buzz provides signed agent coordination and an audit trail. The policy core owns intent state, idempotency, approval binding, and reconciliation. Settlement adapters own rail-specific execution. Wavelength is the first adapter.
+Hermes Payments separates the part that decides **whether a payment is allowed** from the part that moves money. `PeerTransport` is the transport-neutral boundary between Hermes agents. Buzz currently provides the signed coordination adapter and audit trail behind that boundary. The policy core owns intent state, idempotency, approval binding, and reconciliation. Settlement adapters own rail-specific execution. Wavelength is the first adapter.
 
 > This repository is deliberately conservative: no autonomous spending, no mainnet configuration, no secrets in transport messages, and no claim of full live protocol completion until the operational gates are actually green.
 
@@ -11,9 +11,10 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 - A versioned protocol for `PaymentIntent`, `PaymentQuote`, `PaymentApproval`, and `PaymentReceipt`.
 - A deterministic state machine for one payment intent.
 - A rail-neutral policy engine with durable replay protection and an append-only audit log.
-- A Buzz transport boundary using NIP-29 kind-9 channel messages.
+- A transport-neutral `PeerTransport` contract carrying typed payment messages and delivery metadata.
+- A Buzz adapter using NIP-29 kind-9 channel messages.
 - A regtest-only Wavelength adapter using the exact prepared send intent returned by the raw RPC surface.
-- A deterministic two-Hermes integration proof built entirely from fakes.
+- A deterministic two-Hermes integration proof using two independent `HermesPeer` instances and an in-memory transport.
 - A recorded live Signet Wavelength/Ark settlement proof, plus a combined live Buzz kind-9 coordination and receipt proof.
 
 ## What it is not
@@ -31,12 +32,13 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 |---|---:|---|
 | Versioned protocol models and canonical IDs | Implemented | `src/hermes_payments/models.py`, `tests/test_contract_invariants.py` |
 | Rail-neutral policy/state core | Implemented | `src/hermes_payments/policy.py`, `state_machine.py` |
-| Buzz transport | Implemented | NIP-29 kind 9, `src/hermes_payments/transport.py` |
+| Peer transport contract | Implemented | `src/hermes_payments/peer_transport.py`, `peer.py` |
+| Buzz transport adapter | Implemented | NIP-29 kind 9, `src/hermes_payments/transport.py` |
 | Wavelength adapter | Implemented for **regtest only** | Raw `PrepareSend`/`Send`, recipient-side `activity --kind recv` |
 | Live Signet Wavelength settlement | Verified externally | [Settlement evidence](docs/live-signet-payment.md) |
 | Live Buzz + Wavelength Signet vertical | Verified externally; pending two-Hermes regtest gate | [Combined live evidence](docs/live-signet-buzz-vertical.md) |
 | Live Buzz kind-9 transport | Verified on local relay | [Transport evidence](docs/live-buzz-transport.md) |
-| Two-Hermes deterministic proof | Implemented and tested | `tests/test_two_hermes_e2e.py` |
+| Two-Hermes transport-neutral proof | Implemented and tested | `tests/test_hermes_to_hermes_e2e.py` |
 | Two deployed Hermes processes + regtest settlement | Open operational gate | `docs/VERIFICATION.md` |
 | Ark as a first-class protocol rail | Intentionally open | `docs/RAILS.md` |
 
@@ -46,10 +48,11 @@ The repository currently models a Lightning invoice as the receive instruction. 
 
 ```mermaid
 flowchart LR
-    A[Hermes A\nSender] -->|PaymentIntent| B[Buzz\nNIP-29 kind 9]
+    A[Hermes A\nSender] -->|typed PaymentIntent| P[PeerTransport]
+    P --> B[Buzz adapter\nNIP-29 kind 9]
     B --> C[Hermes B\nRecipient]
-    C -->|PaymentQuote\nreceive instruction| B
-    B --> A
+    C -->|typed PaymentQuote\nreceive instruction| P
+    P --> A
     A --> D[Local policy\nexpiry + allowlists + fee]
     D --> E[prepare\nnon-mutating]
     E --> F[Local human approval\nintent + quote + prepared hash]
@@ -57,11 +60,11 @@ flowchart LR
     G --> H[Wavelength / wavecli\nregtest raw RPC]
     H --> I[Settlement rail\nLightning or adapter-selected route]
     I --> J[Recipient recv activity]
-    J -->|PaymentReceipt| B
-    B --> A
+    J -->|PaymentReceipt| P
+    P --> A
 ```
 
-`PaymentApproval` is the important exception: it is **local-only**. It never enters Buzz, never enters a Nostr envelope, and never crosses the relay.
+`PaymentApproval` is the important exception: it is **local-only**. It never enters `PeerTransport`, Buzz, a Nostr envelope, or any future relay.
 
 ## Quick start
 
@@ -75,7 +78,7 @@ python -m pip install -e '.[dev]'
 pytest -q
 ```
 
-The test suite is deterministic and offline. It uses `FakeExecutor` for Buzz and `FakeWavecliExecutor` for Wavelength. Passing tests prove protocol composition and safety invariants; they do **not** prove that a live daemon or relay is reachable.
+The test suite is deterministic and offline. It uses `InMemoryTransportHub` for the transport-neutral two-peer proof, `FakeExecutor` for the Buzz adapter, and `FakeWavecliExecutor` for Wavelength. Passing tests prove protocol composition and safety invariants; they do **not** prove that a live daemon or relay is reachable.
 
 ## Repository map
 
@@ -93,11 +96,16 @@ The tree below highlights the main files; it is intentionally abbreviated.
 │   ├── state_machine.py   # explicit finite automaton
 │   ├── policy.py          # idempotency, audit, approval, execution policy
 │   ├── envelope.py        # versioned JSON content envelope
-│   ├── transport.py       # Buzz CLI boundary and untrusted validation
+│   ├── peer_transport.py   # transport-neutral peer contract + in-memory seam
+│   ├── peer.py             # role-neutral Hermes endpoint
+│   ├── transport.py        # Buzz adapter and untrusted validation
 │   └── adapter.py         # SettlementAdapter + WavelengthAdapter
 ├── tests/
 │   ├── test_contract_invariants.py
 │   ├── test_policy_core.py
+│   ├── test_peer_transport.py
+│   ├── test_peer.py
+│   ├── test_hermes_to_hermes_e2e.py
 │   ├── test_transport.py
 │   ├── test_wavelength_adapter.py
 │   └── test_two_hermes_e2e.py

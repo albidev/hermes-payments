@@ -4,6 +4,9 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- Added the transport-neutral `PeerTransport` contract and role-neutral `HermesPeer` endpoint.
+- Added deterministic `InMemoryTransportHub` Hermes-to-Hermes coverage with replay and reconciliation paths.
+- Adapted Buzz to the generic peer contract while preserving the existing helper methods for compatibility.
 - Expanded repository documentation in English.
 - Documented the distinction between on-chain bootstrap funding and the actual settlement rail.
 - Documented the current Wavelength route-semantics gap: an invoice quote may be internally settled through Ark, while the protocol still exposes `lightning` as its only rail.

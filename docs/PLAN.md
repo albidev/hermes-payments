@@ -2,7 +2,7 @@
 
 ## Product goal
 
-Prove one replay-safe, human-approved payment between two Hermes identities, coordinated through signed Buzz channel messages and settled by a pluggable Wavelength adapter.
+Prove one replay-safe, human-approved payment between two Hermes identities through a transport-neutral peer contract, with signed Buzz channel messages as the current adapter and a pluggable Wavelength settlement adapter.
 
 ## Completed implementation gates
 
@@ -13,6 +13,7 @@ Prove one replay-safe, human-approved payment between two Hermes identities, coo
 | P3 | Buzz transport with NIP-29 kind-9 envelopes | Complete |
 | P4 | Regtest-only Wavelength prepare/execute/receipt adapter | Complete |
 | P5 | Deterministic two-Hermes composition and failure paths | Complete |
+| P5.1 | Transport-neutral `PeerTransport` and `HermesPeer` composition | Complete |
 
 ## Open operational gate
 
@@ -20,7 +21,7 @@ Prove one replay-safe, human-approved payment between two Hermes identities, coo
 |---|---|---:|
 | P6 | Two real Hermes processes, real Buzz channel, funded sender, real receipt, recovery evidence | **Partial on Signet; regtest and restart recovery open** |
 
-P5 is a deterministic integration proof. The combined Signet run is external evidence for the coordination and settlement path, but P6 remains open until the deployment/restart requirements are exercised with two real Hermes processes and a real Wavelength regtest environment.
+P5 and P5.1 are deterministic integration proofs. The combined Signet run is external evidence for the coordination and settlement path, but P6 remains open until the deployment/restart requirements are exercised with two real Hermes processes and a real Wavelength regtest environment.
 
 ## Live settlement milestone
 

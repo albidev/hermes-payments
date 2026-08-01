@@ -4,6 +4,7 @@ The diagrams are source-controlled so architecture changes are reviewable.
 
 ## Mermaid sources
 
+- [`hermes-peer-transport.mmd`](hermes-peer-transport.mmd) — transport-neutral peer boundary and Buzz adapter.
 - [`payment-sequence.mmd`](payment-sequence.mmd) — happy-path interaction sequence.
 - [`reconciliation-sequence.mmd`](reconciliation-sequence.mmd) — ambiguous execution and receipt recovery.
 - [`state-machine.mmd`](state-machine.mmd) — intent lifecycle and fail-closed transitions.

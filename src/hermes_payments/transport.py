@@ -44,6 +44,7 @@ from .models import (
     PaymentQuote,
     PaymentReceipt,
 )
+from .peer_transport import PeerMessage, message_author
 
 # ---------------------------------------------------------------------------
 # Raw event from Buzz CLI
@@ -428,23 +429,60 @@ class BuzzTransport:
         self._channel = channel
         self._clock = clock or (lambda: int(time.time()))
 
-    def send_intent(self, intent: PaymentIntent) -> str:
-        """Send a PaymentIntent via Buzz. Returns the event ID."""
-        content = encode_content(intent)
+    def send(self, message: PaymentMessage) -> str:
+        """Send any transportable payment message via Buzz."""
+        content = encode_content(message)
         result = self._executor.send(channel=self._channel, content=content)
         return result.event_id
+
+    def send_intent(self, intent: PaymentIntent) -> str:
+        """Compatibility helper; prefer the generic ``send()`` surface."""
+        return self.send(intent)
 
     def send_quote(self, quote: PaymentQuote) -> str:
-        """Send a PaymentQuote via Buzz. Returns the event ID."""
-        content = encode_content(quote)
-        result = self._executor.send(channel=self._channel, content=content)
-        return result.event_id
+        """Compatibility helper; prefer the generic ``send()`` surface."""
+        return self.send(quote)
 
     def send_receipt(self, receipt: PaymentReceipt) -> str:
-        """Send a PaymentReceipt via Buzz. Returns the event ID."""
-        content = encode_content(receipt)
-        result = self._executor.send(channel=self._channel, content=content)
-        return result.event_id
+        """Compatibility helper; prefer the generic ``send()`` surface."""
+        return self.send(receipt)
+
+    def _receive_peer_messages(
+        self,
+        *,
+        since: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> list[PeerMessage]:
+        """Fetch, validate, and annotate payment messages from Buzz."""
+        raw_events = self._executor.get(
+            channel=self._channel,
+            kinds=[WIRE_KIND],
+            since=since,
+            limit=limit,
+        )
+        messages: list[PeerMessage] = []
+        for event in raw_events:
+            try:
+                message = validate_received_event(
+                    event,
+                    expected_channel=self._channel,
+                    clock=self._clock,
+                )
+                messages.append(
+                    PeerMessage(
+                        message_id=event.id,
+                        message=message,
+                        author=message_author(message),
+                        published_at=event.created_at,
+                    )
+                )
+            except EnvelopeValidationError:
+                continue
+        return messages
+
+    def receive(self, *, limit: Optional[int] = None) -> list[PeerMessage]:
+        """Receive validated messages through the generic peer contract."""
+        return self._receive_peer_messages(limit=limit)
 
     def receive_messages(
         self,
@@ -452,7 +490,7 @@ class BuzzTransport:
         since: Optional[int] = None,
         limit: Optional[int] = None,
     ) -> list[PaymentMessage]:
-        """Fetch and validate payment messages from the channel.
+        """Compatibility helper returning only domain messages.
 
         Uses ``buzz messages get --channel <UUID> --kinds 9`` to retrieve
         only kind-9 channel messages.  All received events are treated as
@@ -460,21 +498,10 @@ class BuzzTransport:
         expiry, identity) before returning domain objects.
         Invalid events are silently skipped.
         """
-        raw_events = self._executor.get(
-            channel=self._channel,
-            kinds=[WIRE_KIND],
-            since=since,
-            limit=limit,
-        )
-        messages: list[PaymentMessage] = []
-        for event in raw_events:
-            try:
-                msg = validate_received_event(
-                    event,
-                    expected_channel=self._channel,
-                    clock=self._clock,
-                )
-                messages.append(msg)
-            except EnvelopeValidationError:
-                continue
-        return messages
+        return [
+            peer_message.message
+            for peer_message in self._receive_peer_messages(
+                since=since,
+                limit=limit,
+            )
+        ]

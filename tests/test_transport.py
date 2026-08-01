@@ -33,6 +33,7 @@ from hermes_payments.models import (
     PaymentQuote,
     PaymentReceipt,
 )
+from hermes_payments.peer_transport import PeerMessage, PeerTransport
 from hermes_payments.transport import (
     BuzzTransport,
     EnvelopeValidationError,
@@ -751,6 +752,46 @@ class TestChannelScoping:
 
         assert ex.sent[0][0] == "ch-A"
         assert ex.sent[1][0] == "ch-B"
+
+
+# ---------------------------------------------------------------------------
+# 10. Transport-neutral adapter surface
+# ---------------------------------------------------------------------------
+
+
+class TestGenericPeerTransport:
+    def test_buzz_transport_implements_peer_transport(self):
+        transport = BuzzTransport(
+            FakeExecutor(), channel=CHANNEL_UUID, clock=lambda: NOW
+        )
+        assert isinstance(transport, PeerTransport)
+
+    def test_generic_send_and_receive_preserve_peer_metadata(self):
+        ex = FakeExecutor()
+        transport = BuzzTransport(ex, channel=CHANNEL_UUID, clock=lambda: NOW)
+        intent = make_intent()
+
+        message_id = transport.send(intent)
+        received = transport.receive()
+
+        assert message_id
+        assert len(received) == 1
+        assert isinstance(received[0], PeerMessage)
+        assert received[0].message_id == message_id
+        assert received[0].message == intent
+        assert received[0].author == intent.sender
+        assert received[0].published_at == ex.get(channel=CHANNEL_UUID)[0].created_at
+
+    def test_legacy_send_helpers_delegate_to_generic_send(self):
+        ex = FakeExecutor()
+        transport = BuzzTransport(ex, channel=CHANNEL_UUID, clock=lambda: NOW)
+        intent = make_intent()
+        quote = make_quote(intent)
+        receipt = make_receipt(intent, quote)
+
+        assert transport.send_intent(intent)
+        assert transport.send_quote(quote)
+        assert transport.send_receipt(receipt)
 
 
 # ---------------------------------------------------------------------------

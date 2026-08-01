@@ -7,17 +7,20 @@ The diagrams in this document describe protocol behavior. Mermaid source files a
 ```mermaid
 sequenceDiagram
     participant A as Hermes A / Alice
-    participant BZ as Buzz channel
+    participant PT as PeerTransport
+    participant BZ as Buzz adapter
     participant B as Hermes B / Bob
     participant W as Wavelength adapter
     participant D as Wavelength daemon
     A->>A: Create PaymentIntent
     A->>A: Policy checks expiry, recipient, amount, max fee
-    A->>BZ: kind 9: payment_intent envelope
-    BZ->>B: Signed event
+    A->>PT: PaymentIntent
+    PT->>BZ: Adapter send
+    BZ->>B: Signed kind-9 event
     B->>B: Validate kind, h-tag, envelope, expiry, author
-    B->>BZ: kind 9: payment_quote envelope
-    BZ->>A: Signed event
+    B->>PT: PaymentQuote
+    PT->>BZ: Adapter send
+    BZ->>A: Signed kind-9 event
     A->>A: Validate quote and fee constraint
     A->>W: prepare(invoice, amount, max_fee)
     W->>D: Raw PrepareSend RPC
@@ -30,7 +33,8 @@ sequenceDiagram
     W-->>A: ExecuteResult
     B->>D: Query activity --kind recv
     D-->>B: Matching COMPLETE entry
-    B->>BZ: kind 9: payment_receipt envelope
+    B->>PT: PaymentReceipt
+    PT->>BZ: Adapter send
     BZ->>A: Signed receipt
     A->>A: Validate receipt and settle state
 ```
@@ -44,8 +48,8 @@ sequenceDiagram
     participant A as Alice policy
     participant W as Adapter
     participant D as Daemon
-    participant B as Bob verifier
-    participant BZ as Buzz
+    participant PT as PeerTransport
+    participant BZ as Buzz adapter
     A->>W: execute exact prepared intent
     W->>D: Send
     D-->>W: timeout / PENDING / unknown
@@ -54,7 +58,8 @@ sequenceDiagram
     Note over A: No retry. No second Send.
     B->>D: Verify recipient recv activity
     D-->>B: COMPLETE matching entry
-    B->>BZ: PaymentReceipt
+    B->>PT: PaymentReceipt
+    PT->>BZ: Adapter send
     BZ->>A: Receipt
     A->>A: Verify receipt → SETTLED
 ```

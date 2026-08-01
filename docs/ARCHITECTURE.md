@@ -15,7 +15,10 @@ flowchart TB
         policy --> approval
         approval --> adapter
     end
-    subgraph B[Buzz / Nostr transport]
+    subgraph PT[Transport-neutral peer boundary]
+        peer[PeerTransport\ntyped messages + metadata]
+    end
+    subgraph B[Buzz adapter — current transport]
         channel[NIP-29 channel\nkind 9 messages]
     end
     subgraph H2[Hermes B — recipient]
@@ -26,7 +29,8 @@ flowchart TB
         validate --> quote
         verify --> receipt
     end
-    policy <-->|Intent / Quote / Receipt| channel
+    policy <-->|Intent / Quote / Receipt| peer
+    peer <--> channel
     channel <--> validate
     adapter --> wavelength[WavelengthAdapter]
     wavelength --> rpc[wavecli raw RPC]
@@ -40,7 +44,7 @@ flowchart TB
 
 ### Domain layer — `models.py`
 
-Defines typed `PaymentIntent`, `PaymentQuote`, `PaymentApproval`, `PaymentReceipt`, `Rail`, `RailReceiveInstruction`, canonical serialization, and SHA-256 identifiers. Models do not call Buzz, Wavelength, subprocesses, or the network.
+Defines typed `PaymentIntent`, `PaymentQuote`, `PaymentApproval`, `PaymentReceipt`, transport-neutral `AgentIdentity`, `Rail`, `RailReceiveInstruction`, canonical serialization, and SHA-256 identifiers. Models do not call Buzz, Wavelength, subprocesses, or the network. `BuzzIdentity` remains a source-compatible alias for protocol-v1 callers; it is not the domain's transport contract.
 
 ### State layer — `state_machine.py`
 
@@ -56,9 +60,15 @@ It never becomes a normal retryable failure after execution may have started.
 
 `PaymentOrchestrator` composes the state machine with intent idempotency, approval-triple replay protection, receipt uniqueness, durable JSON storage, append-only JSONL audit records, expiry checks, allowlists, fee limits, and adapter invocation only after approval.
 
-### Transport layer — `envelope.py` and `transport.py`
+### Peer boundary — `peer_transport.py` and `peer.py`
 
-Three domain message types travel through a single NIP-29 kind-9 channel message. The content field is a versioned JSON envelope:
+`PeerTransport` is the application-facing contract between two Hermes peers. It carries typed payment messages and returns `PeerMessage` metadata (`message_id`, author, and publication timestamp). `HermesPeer` composes that contract with local policy and exposes explicit intent, quote, and receipt handoffs. It does not know whether delivery uses Buzz, HTTP, WebSocket, a Unix socket, or an in-memory test hub.
+
+`PaymentApproval` is rejected before it can enter this boundary. Transport message IDs are retained so a relay duplicate can be distinguished from a domain duplicate; policy idempotency remains the authority for replay safety.
+
+### Buzz adapter — `envelope.py` and `transport.py`
+
+Buzz is the current concrete `PeerTransport` adapter. Three domain message types travel through a single NIP-29 kind-9 channel message. The content field is a versioned JSON envelope:
 
 ```json
 {
@@ -69,7 +79,7 @@ Three domain message types travel through a single NIP-29 kind-9 channel message
 }
 ```
 
-The `h` channel tag is managed by Buzz. Received events are treated as untrusted and checked for kind, channel, protocol/version, schema, expiry, and author identity.
+The `h` channel tag is managed by Buzz. Received events are treated as untrusted and checked for kind, channel, protocol/version, schema, expiry, and author identity. Those checks stay inside the adapter; the peer and policy layers see only validated `PeerMessage` objects.
 
 ### Settlement layer — `adapter.py`
 
@@ -85,8 +95,8 @@ The `h` channel tag is managed by Buzz. Received events are treated as untrusted
 
 | Boundary | Untrusted input | Enforcement |
 |---|---|---|
-| Buzz → transport | Event JSON, tags, author, kind | `validate_received_event()` |
-| Transport → policy | Expired or mismatched messages | Model, expiry, identity checks |
+| Buzz → adapter | Event JSON, tags, author, kind | `validate_received_event()` |
+| Peer transport → policy | Expired or mismatched messages | `PeerMessage`, model, expiry, identity checks |
 | Policy → adapter | Adapter results | State machine, fee, rail checks |
 | Adapter → wallet CLI | CLI JSON and exit status | Strict parsing, redaction, ambiguity mapping |
 | Activity → receipt | Wallet activity entries | Reference, amount, and `COMPLETE` match |
@@ -108,4 +118,4 @@ That is a documented limitation, not an invisible conversion. First-class Ark se
 
 ## Deterministic versus live architecture
 
-The checked-in P5 proof uses `FakeExecutor` instead of Buzz, `FakeWavecliExecutor` instead of Wavelength, and manually injected relay events with deterministic authorship. This proves composition. A live proof additionally needs two daemons, real Buzz delivery, funded wallets, real receipt activity, and recovery evidence. See [VERIFICATION.md](VERIFICATION.md).
+The transport-neutral proof uses two independent `HermesPeer` instances, an `InMemoryTransportHub`, and separate policy engines. The Buzz proof uses `FakeExecutor` and the Wavelength proof uses `FakeWavecliExecutor`. This proves composition without making Buzz part of the application contract. A live proof additionally needs two daemons, real Buzz delivery, funded wallets, real receipt activity, and recovery evidence. See [VERIFICATION.md](VERIFICATION.md).

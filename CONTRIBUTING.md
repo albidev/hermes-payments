@@ -39,6 +39,7 @@ Add an entry to [docs/DECISIONS.md](docs/DECISIONS.md) when changing:
 
 - wire format, message types, protocol version, or canonical hashing;
 - the meaning of local approval;
+- the transport-neutral peer contract or concrete transport adapters;
 - state-machine transitions or reconciliation behavior;
 - Buzz event/channel semantics;
 - adapter command surfaces or receipt verification;
@@ -51,6 +52,7 @@ Add an entry to [docs/DECISIONS.md](docs/DECISIONS.md) when changing:
 |---|---|
 | Domain model or hash | Contract invariant tests plus round-trip tests |
 | State machine or policy | Policy tests, terminal-state tests, replay tests |
+| Peer transport or HermesPeer | Contract tests, author/replay negatives, transport-neutral two-peer proof |
 | Buzz transport | Kind/channel/schema/expiry/identity negative tests |
 | Wavelength adapter | Raw RPC command tests, preview binding tests, receipt tests |
 | End-to-end composition | Deterministic two-Hermes tests and full suite |
