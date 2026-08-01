@@ -431,6 +431,7 @@ class BuzzTransport:
 
     def send(self, message: PaymentMessage) -> str:
         """Send any transportable payment message via Buzz."""
+        message_author(message)
         content = encode_content(message)
         result = self._executor.send(channel=self._channel, content=content)
         return result.event_id

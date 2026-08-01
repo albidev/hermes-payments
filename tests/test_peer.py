@@ -128,6 +128,29 @@ class TestHermesPeerBoundary:
         with pytest.raises(PeerTransportError, match="PaymentApproval"):
             alice.send(approval)
 
+    def test_accept_quote_rejects_mismatched_recipient(self):
+        alice, _, _, _ = _peers()
+        intent = make_intent()
+        alice.submit_intent(intent)
+        foreign_quote = make_quote(intent).model_copy(
+            update={"recipient": SENDER_IDENTITY}
+        )
+
+        with pytest.raises(PeerProtocolError, match="quote recipient"):
+            alice.accept_quote(foreign_quote)
+
+    def test_accept_receipt_rejects_mismatched_recipient(self):
+        alice, _, _, _ = _peers()
+        intent = make_intent()
+        quote = make_quote(intent)
+        alice.submit_intent(intent)
+        foreign_receipt = make_receipt(intent, quote).model_copy(
+            update={"recipient": SENDER_IDENTITY}
+        )
+
+        with pytest.raises(PeerProtocolError, match="receipt recipient"):
+            alice.accept_receipt(foreign_receipt)
+
 
 class TestHermesPeerReceiptPath:
     def test_ambiguous_execution_is_settled_by_recipient_receipt(self):

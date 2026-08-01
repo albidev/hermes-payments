@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import json
+from typing import cast
 
 import pytest
 
@@ -30,10 +31,15 @@ from hermes_payments.models import (
     MessageKind,
     PaymentApproval,
     PaymentIntent,
+    PaymentMessage,
     PaymentQuote,
     PaymentReceipt,
 )
-from hermes_payments.peer_transport import PeerMessage, PeerTransport
+from hermes_payments.peer_transport import (
+    PeerMessage,
+    PeerTransport,
+    PeerTransportError,
+)
 from hermes_payments.transport import (
     BuzzTransport,
     EnvelopeValidationError,
@@ -792,6 +798,15 @@ class TestGenericPeerTransport:
         assert transport.send_intent(intent)
         assert transport.send_quote(quote)
         assert transport.send_receipt(receipt)
+
+    def test_generic_send_rejects_approval_at_peer_boundary(self):
+        transport = BuzzTransport(FakeExecutor(), channel=CHANNEL_UUID)
+        intent = make_intent()
+        quote = make_quote(intent)
+        approval = make_approval(intent, quote)
+
+        with pytest.raises(PeerTransportError, match="PaymentApproval"):
+            transport.send(cast(PaymentMessage, approval))
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from typing import Optional
 from .models import (
     AgentIdentity,
     PaymentIntent,
+    PaymentMessage,
     PaymentQuote,
     PaymentReceipt,
 )
@@ -51,10 +52,10 @@ class HermesPeer:
         """The injected local policy engine."""
         return self._orchestrator
 
-    def send(self, message: object) -> str:
+    def send(self, message: PaymentMessage) -> str:
         """Publish a locally-authored transportable payment message."""
         self._require_local_author(message)
-        return self._transport.send(message)  # type: ignore[arg-type]
+        return self._transport.send(message)
 
     def receive(self, *, limit: Optional[int] = None) -> list[PeerMessage]:
         """Read validated messages without mutating local policy state."""
