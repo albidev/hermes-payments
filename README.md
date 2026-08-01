@@ -6,6 +6,8 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 
 > **Known limitation:** the current `PaymentOrchestrator` supports one active payment flow per instance; it is not a concurrent multi-payment scheduler. See [Known limitations](docs/KNOWN_LIMITATIONS.md).
 
+> This repository is deliberately conservative: no autonomous spending, no mainnet configuration, no secrets in transport messages, and no claim of full live protocol completion until the operational gates are actually green.
+
 ## What this repository is
 
 - A versioned protocol for `PaymentIntent`, `PaymentQuote`, `PaymentApproval`, and `PaymentReceipt`.
