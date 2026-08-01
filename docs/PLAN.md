@@ -22,6 +22,12 @@ Prove one replay-safe, human-approved payment between two Hermes identities, coo
 
 P5 is a deterministic integration proof. P6 is a deployment proof and cannot be declared complete by adding more fake-executor tests.
 
+## Live settlement milestone
+
+The wallet settlement sub-gate is complete on Signet. See [live-signet-payment.md](live-signet-payment.md) for the exact prepared intent, boarding evidence, activity references, and explicit non-claims.
+
+The full P6 gate remains open until the same lifecycle is driven by two Hermes processes over a real Buzz kind-9 channel, followed by recovery testing.
+
 ## Rail evolution
 
 The first protocol receive instruction is a Lightning invoice. Wavelength can internally route an invoice through Ark when the operator and wallet support it. First-class Ark protocol semantics are a separate follow-up and require their own instruction schema, policy, receipt, and compatibility tests.

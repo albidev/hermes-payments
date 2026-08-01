@@ -18,27 +18,22 @@ The suite does not prove that a real Buzz binary or relay is available, that two
 
 ## P6 live gate
 
+The first live Wavelength settlement is now separately verified on Signet. It closes the wallet/operator/recipient settlement sub-gates, but not the full Buzz-mediated protocol gate.
+
 | Gate | Evidence required | Status |
 |---|---|---:|
 | Two isolated Hermes instances | Separate process/config/state roots | Open |
 | Real Buzz transport | Signed kind-9 event observed by both sides | Open |
-| Funded sender | Spendable wallet balance, not merely pending funding | Open |
-| Fresh prepared intent | `PrepareSend` result inspected and approved | Open |
-| Exact execution | Raw `Send` consumes that prepared ID | Open |
-| Recipient receipt | `activity --kind recv` matches reference and amount | Open |
+| Funded sender | Spendable wallet balance, not merely pending funding | **Verified on Signet** — [live evidence](live-signet-payment.md) |
+| Fresh prepared intent | `PrepareSend` result inspected and approved | **Verified on Signet** — [live evidence](live-signet-payment.md) |
+| Exact execution | Raw `Send` consumes that prepared ID | **Verified on Signet** — [live evidence](live-signet-payment.md) |
+| Recipient receipt | `activity --kind recv` matches reference and amount | **Verified on Signet** — [live evidence](live-signet-payment.md) |
 | Recovery | Pending/ambiguous path manually reconciled | Open |
 
-## Signet observation
+The remaining work is to carry the same lifecycle through two real Hermes processes and a real Buzz kind-9 channel, then exercise restart/reconciliation behavior.
 
-During external Wavelength investigation, a persistent Alice wallet received pending on-chain bootstrap funds and a non-mutating quote for Bob's invoice returned:
+## Signet evidence history
 
-```text
-rail:          in_ark
-amount:        2100 sat
-expected fee:  0 sat
-quote status:  complete
-```
+The earlier pre-settlement observation was a pending bootstrap balance and a complete `in_ark` quote. That observation is superseded by the completed run recorded in [live-signet-payment.md](live-signet-payment.md), which includes confirmed boarding, exact `SendPrepared` execution, and matching complete Alice/Bob activity.
 
-This is useful operational evidence about Wavelength route selection, but it is **not** P6 repository proof: the checked-in adapter still rejects `signet`; the quote was prepared outside the Python two-Hermes stack; the send was not approved or executed; and the wallet was still waiting for spendable Ark liquidity.
-
-The distinction is intentional. A log line is not a settlement receipt.
+The live evidence still does **not** claim a Buzz-mediated Hermes protocol run, Signet support in the checked-in Python adapter, or production readiness. A log line is not a settlement receipt; in this case the activity records are the receipt evidence.

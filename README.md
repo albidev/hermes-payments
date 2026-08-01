@@ -4,7 +4,7 @@
 
 Hermes Payments separates the part that decides **whether a payment is allowed** from the part that moves money. Buzz provides signed agent coordination and an audit trail. The policy core owns intent state, idempotency, approval binding, and reconciliation. Settlement adapters own rail-specific execution. Wavelength is the first adapter.
 
-> This repository is deliberately conservative: no autonomous spending, no mainnet configuration, no secrets in transport messages, and no claim of live settlement until the operational gates are actually green.
+> This repository is deliberately conservative: no autonomous spending, no mainnet configuration, no secrets in transport messages, and no claim of full live protocol completion until the operational gates are actually green.
 
 ## What this repository is
 
@@ -14,6 +14,7 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 - A Buzz transport boundary using NIP-29 kind-9 channel messages.
 - A regtest-only Wavelength adapter using the exact prepared send intent returned by the raw RPC surface.
 - A deterministic two-Hermes integration proof built entirely from fakes.
+- A recorded live Signet Wavelength/Ark settlement proof, kept separate from the protocol proof.
 
 ## What it is not
 
@@ -22,7 +23,7 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 - A secret manager.
 - An autonomous spending agent.
 - A mainnet-ready payment service.
-- A live-network test: the checked-in P5 suite does not call Buzz, Wavelength, Docker, or the network.
+- The checked-in P5 suite does not call Buzz, Wavelength, Docker, or the network. The separate [live Signet evidence](docs/live-signet-payment.md) records a real Wavelength wallet-to-wallet settlement, but not the full Buzz-mediated Hermes protocol.
 
 ## Current status
 
@@ -32,6 +33,7 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 | Rail-neutral policy/state core | Implemented | `src/hermes_payments/policy.py`, `state_machine.py` |
 | Buzz transport | Implemented | NIP-29 kind 9, `src/hermes_payments/transport.py` |
 | Wavelength adapter | Implemented for **regtest only** | Raw `PrepareSend`/`Send`, recipient-side `activity --kind recv` |
+| Live Signet Wavelength settlement | Verified externally | [Live evidence](docs/live-signet-payment.md) |
 | Two-Hermes deterministic proof | Implemented and tested | `tests/test_two_hermes_e2e.py` |
 | Two real daemons + real Buzz channel | Open operational gate | `docs/VERIFICATION.md` |
 | Ark as a first-class protocol rail | Intentionally open | `docs/RAILS.md` |
@@ -108,6 +110,7 @@ The test suite is deterministic and offline. It uses `FakeExecutor` for Buzz and
     ├── SECURITY.md
     ├── TESTING.md
     ├── VERIFICATION.md
+    ├── live-signet-payment.md
     └── diagrams/
 ```
 
@@ -126,6 +129,7 @@ The test suite is deterministic and offline. It uses `FakeExecutor` for Buzz and
 | [Decisions](docs/DECISIONS.md) | Architecture decision records and unresolved choices |
 | [Glossary](docs/GLOSSARY.md) | Terms used across the protocol and integrations |
 | [Verification status](docs/VERIFICATION.md) | What is proved, what is not, and the remaining live gates |
+| [Live Signet evidence](docs/live-signet-payment.md) | Reproducible record of the first real Wavelength/Ark wallet settlement |
 | [Diagrams](docs/diagrams/README.md) | Mermaid source plus a standalone visual architecture diagram |
 
 ## Design rules
