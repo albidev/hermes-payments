@@ -2,7 +2,8 @@
 
 This example is a reproducible version of the first live Wavelength/Ark
 settlement used by Hermes Payments. It is intentionally separate from the
-Python adapter because the checked-in adapter remains regtest-only.
+two-Hermes process runner; the checked-in adapter now supports explicitly
+approved Signet test runs but this example remains a historical evidence tool.
 
 ## Safety contract
 

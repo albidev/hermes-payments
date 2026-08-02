@@ -1,8 +1,8 @@
 # P6 Two-Hermes Processes Implementation Plan
 
-> **For Hermes:** Execute this plan task-by-task with strict TDD. Keep the live gate regtest-only and never create or transmit secrets through the process protocol.
+> **For Hermes:** Execute this plan task-by-task with strict TDD. Keep the live gate on an explicitly approved test network (regtest by default; Signet only with human approval) and never create or transmit secrets through the process protocol.
 
-**Goal:** Drive one complete, replay-safe payment through two independently launched Hermes processes, a real Buzz kind-9 transport, and the regtest Wavelength adapter, including restart/reconciliation evidence.
+**Goal:** Drive one complete, replay-safe payment through two independently launched Hermes processes, a real Buzz kind-9 transport, and the Wavelength adapter on an approved test network, including restart/reconciliation evidence.
 
 **Architecture:** The checked-in payment domain remains unchanged. A small example process runner owns only process lifecycle, JSONL control input/output, isolated state roots, and dependency construction. Alice and Bob communicate through `BuzzTransport`; operator commands never become payment messages. Live infrastructure is injected through environment/configuration and is never hard-coded into the domain.
 
@@ -12,12 +12,12 @@
 
 ## Scope and safety gates
 
-- Regtest only for the live P6 gate.
+- Regtest by default; Signet is allowed only for an explicitly approved live test gate.
 - No automatic wallet creation, funding, approval, or settlement.
 - `PaymentApproval` is supplied only through an explicit local operator command/file and is never emitted on stdout as a transport message.
 - Each process gets its own state root, audit path, and configuration.
 - An ambiguous `Send` result stops execution and requires reconciliation; no retry.
-- Signet evidence remains historical validation, not the regtest gate.
+- Signet evidence is valid for the approved Signet gate, but is not a production or mainnet claim.
 
 ## Tasks
 
@@ -64,7 +64,7 @@ Include duplicate delivery and an ambiguous execution path. The test must prove 
 
 Add an explicit configuration example under `examples/two-hermes-regtest/` and a supervisor script that starts Alice and Bob as separate OS processes. The supervisor must:
 
-- refuse non-regtest configuration;
+- refuse unsupported networks and require explicit RPC endpoints for Signet;
 - refuse missing channel/identity/state-root configuration;
 - keep stdout machine-readable and logs redacted;
 - stop on either child process failure;
@@ -75,7 +75,7 @@ Add an explicit configuration example under `examples/two-hermes-regtest/` and a
 Before running a payment:
 
 - verify the Buzz relay health and signed kind-9 path;
-- verify both regtest Wavelength daemons and operator connectivity;
+- verify both Wavelength daemons for the selected test network and operator connectivity;
 - verify Bob can receive and Alice has spendable balance;
 - record a preflight report without secrets.
 
@@ -83,7 +83,8 @@ If Buzz is unavailable, stop. Do not silently fall back to the in-memory transpo
 
 ### Task 6 — Live P6 execution and recovery
 
-Run one explicitly approved regtest payment. Capture only redacted evidence:
+Run one explicitly approved test-network payment (Signet for the current gate).
+Capture only redacted evidence:
 
 - abbreviated intent/quote/receipt IDs;
 - state transitions and timestamps;

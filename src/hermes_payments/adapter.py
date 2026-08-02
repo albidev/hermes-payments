@@ -12,8 +12,8 @@ Adapter contract:
 - The adapter NEVER retries automatically.
 
 P4: WavelengthAdapter maps the generic prepare/execute/verify interface
-to wavecli's gRPC CLI surface.  REGTEST ONLY — every non-regtest
-configuration is rejected at construction time.
+to wavecli's gRPC CLI surface.  Only explicitly supported test networks
+(`regtest` and `signet`) are accepted at construction time.
 
 DESIGN NOTE — raw RPC path vs high-level `wavecli send`:
 
@@ -165,6 +165,19 @@ class SettlementAdapter(ABC):
         happened and matches the expected amount.
         """
         ...
+
+    def verify_sender_settlement(
+        self,
+        settlement_ref: str,
+        expected_amount_sat: int,
+    ) -> ReceiptVerifyResult:
+        """Verify settlement from the sender's local activity.
+
+        The default keeps third-party adapters backwards-compatible. Rails
+        whose receipt verifier is recipient-side only should override this
+        method with a sender-side activity query.
+        """
+        return self.verify_receipt(settlement_ref, expected_amount_sat)
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +424,21 @@ class FakeWavecliExecutor(WavecliExecutor):
 _RAW_RPC_SERVICE = "wavewalletrpc.WalletService"
 
 
+def _coerce_numeric(value: Any, *, field: str) -> int | float:
+    """Normalize protobuf-JSON numeric strings without accepting arbitrary text."""
+    if isinstance(value, bool):
+        raise AdapterError(f"unexpected {field} type: bool")
+    if isinstance(value, (int, float)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if re.fullmatch(r"[+-]?\d+", text):
+            return int(text)
+        if re.fullmatch(r"[+-]?(?:\d+\.\d*|\.\d+)", text):
+            return float(text)
+    raise AdapterError(f"unexpected {field} type: {type(value).__name__}")
+
+
 def _parse_prepare_response(data: Any) -> Dict[str, Any]:
     """Parse a raw PrepareSendResponse from wavecli dev RPC.
 
@@ -433,17 +461,15 @@ def _parse_prepare_response(data: Any) -> Dict[str, Any]:
             "cannot proceed without a valid intent token"
         )
 
-    expires_at = data.get("expires_at_unix", 0)
-    if not isinstance(expires_at, (int, float)):
-        raise AdapterError(
-            f"unexpected expires_at_unix type: {type(expires_at).__name__}"
-        )
+    expires_at = _coerce_numeric(
+        data.get("expires_at_unix", 0),
+        field="expires_at_unix",
+    )
 
-    fee_sat = data.get("expected_fee_sat", 0)
-    if not isinstance(fee_sat, (int, float)):
-        raise AdapterError(
-            f"unexpected expected_fee_sat type: {type(fee_sat).__name__}"
-        )
+    fee_sat = _coerce_numeric(
+        data.get("expected_fee_sat", 0),
+        field="expected_fee_sat",
+    )
 
     fee_known = data.get("fee_known", False)
     if not fee_known:
@@ -453,7 +479,10 @@ def _parse_prepare_response(data: Any) -> Dict[str, Any]:
         )
 
     total_outflow_known = data.get("total_outflow_known", False)
-    total_outflow_sat = data.get("expected_total_outflow_sat", 0)
+    total_outflow_sat = _coerce_numeric(
+        data.get("expected_total_outflow_sat", 0),
+        field="expected_total_outflow_sat",
+    )
     if not total_outflow_known:
         raise AdapterError(
             "PrepareSend returned total_outflow_known=false; "
@@ -473,11 +502,10 @@ def _parse_prepare_response(data: Any) -> Dict[str, Any]:
     else:
         rail_label = str(rail_raw)
 
-    amount_sat = data.get("amount_sat", 0)
-    if not isinstance(amount_sat, (int, float)):
-        raise AdapterError(
-            f"unexpected amount_sat type: {type(amount_sat).__name__}"
-        )
+    amount_sat = _coerce_numeric(
+        data.get("amount_sat", 0),
+        field="amount_sat",
+    )
 
     return {
         "send_intent_id": send_intent_id,
@@ -623,11 +651,11 @@ def _extract_payment_hash(entry: Dict[str, Any]) -> str:
 
 
 class WavelengthAdapter(SettlementAdapter):
-    """First settlement adapter: Wavelength Lightning (REGTEST ONLY).
+    """First settlement adapter: Wavelength Lightning (test networks only).
 
     Maps the generic prepare/execute/verify interface to wavecli's
     gRPC CLI surface.  The adapter:
-    - Rejects every non-regtest configuration at construction time.
+    - Accepts only explicitly selected ``regtest`` or ``signet`` configuration.
     - Uses raw PrepareSend RPC for prepare (non-mutating).
     - Uses raw Send RPC for execute (single-use send_intent_id).
     - Verifies receipts against recipient-side activity (kind=recv).
@@ -658,11 +686,12 @@ class WavelengthAdapter(SettlementAdapter):
     rpc_server : str
         wavecli --rpcserver value (default: localhost:10029).
     network : str
-        Must be "regtest".  Any other value is rejected.
+        Must be "regtest" or explicitly selected "signet".  Any other value
+        is rejected.
     no_tls : bool
-        Pass --no-tls to wavecli (required for local regtest).
+        Pass --no-tls to wavecli (required for the local test daemons).
     no_macaroons : bool
-        Pass --no-macaroons to wavecli (required for local regtest).
+        Pass --no-macaroons to wavecli (required for the local test daemons).
     """
 
     def __init__(
@@ -674,10 +703,10 @@ class WavelengthAdapter(SettlementAdapter):
         no_tls: bool = True,
         no_macaroons: bool = True,
     ):
-        # ── Non-negotiable: REGTEST ONLY ────────────────────────────
-        if network != "regtest":
+        # ── Non-negotiable: explicitly supported test networks only ──
+        if network not in {"regtest", "signet"}:
             raise ValueError(
-                f"WavelengthAdapter only supports regtest; got '{network}'. "
+                f"WavelengthAdapter only supports regtest or signet; got '{network}'. "
                 "Never default to mainnet."
             )
         self._executor = executor
@@ -921,26 +950,35 @@ class WavelengthAdapter(SettlementAdapter):
         settlement_ref: str,
         expected_amount_sat: int,
     ) -> ReceiptVerifyResult:
-        """Verify a receipt against recipient-side activity (kind=recv).
-
-        The receipt verifier lives at the recipient.  It must query the
-        recipient's own incoming activity (kind=recv), NOT the sender's
-        outgoing activity (kind=send).
-
-        Uses ``wavecli activity --format json --kind recv`` to list
-        recipient incoming activity and find a COMPLETE entry matching
-        the expected payment_hash and amount_sat.
-
-        Source-grounded ID mapping:
-        - settlement_ref is a payment_hash that must exist in
-          recipient recv activity.
-        - If no matching entry is found, we fail closed (verified=False).
-        - If the entry exists but status is not COMPLETE, we fail closed.
-        - Amount must match exactly.
-        """
-        # ── Query recipient-side recv activity ─────────────────────
-        cmd = _build_wavecli_activity_cmd(
+        """Verify a receipt against recipient-side incoming activity."""
+        return self._verify_activity(
+            settlement_ref=settlement_ref,
+            expected_amount_sat=expected_amount_sat,
             kind="recv",
+        )
+
+    def verify_sender_settlement(
+        self,
+        settlement_ref: str,
+        expected_amount_sat: int,
+    ) -> ReceiptVerifyResult:
+        """Verify a received receipt against sender-side send activity."""
+        return self._verify_activity(
+            settlement_ref=settlement_ref,
+            expected_amount_sat=expected_amount_sat,
+            kind="send",
+        )
+
+    def _verify_activity(
+        self,
+        *,
+        settlement_ref: str,
+        expected_amount_sat: int,
+        kind: str,
+    ) -> ReceiptVerifyResult:
+        """Verify one payment hash in a local activity direction."""
+        cmd = _build_wavecli_activity_cmd(
+            kind=kind,
             rpc_server=self._rpc_server,
             network=self._network,
             no_tls=self._no_tls,
@@ -951,7 +989,6 @@ class WavelengthAdapter(SettlementAdapter):
         try:
             data = self._executor.run(cmd)
         except AdapterError as e:
-            # Cannot reach activity — fail closed
             return ReceiptVerifyResult(
                 verified=False,
                 settlement_ref=settlement_ref,
@@ -968,14 +1005,17 @@ class WavelengthAdapter(SettlementAdapter):
                 error=f"activity query failed: {redact_sensitive(str(e))}",
             )
 
-        # ── Parse activity response ─────────────────────────────────
-        # The response may be a raw proto (list of entries) or a
-        # structured response with an "entries" key.
         entries: List[Dict[str, Any]] = []
         if isinstance(data, list):
             entries = [entry for entry in data if isinstance(entry, dict)]
         elif isinstance(data, dict):
-            candidate = data.get("entries", data.get("items", []))
+            activity = data.get("activity")
+            if isinstance(activity, dict):
+                data = activity
+            candidate = data.get(
+                "entries",
+                data.get("items", data.get("recent", [])),
+            )
             if not candidate and "entry" in data:
                 candidate = [data["entry"]]
             if isinstance(candidate, list):
@@ -983,10 +1023,7 @@ class WavelengthAdapter(SettlementAdapter):
             elif isinstance(candidate, dict):
                 entries = [candidate]
 
-        # ── Find matching entry by payment_hash ─────────────────────
         for entry in entries:
-            if not isinstance(entry, dict):
-                continue
             try:
                 parsed = _parse_activity_entry(entry)
             except AdapterError:
@@ -995,12 +1032,17 @@ class WavelengthAdapter(SettlementAdapter):
             if parsed["payment_hash"] != settlement_ref:
                 continue
 
-            # ── Found a match — check status and amount ─────────────
+            amount_sat = parsed["amount_sat"]
+            if kind == "send":
+                # Wallet send activity is signed as a negative outflow;
+                # receipt amounts are always represented as positive sats.
+                amount_sat = abs(amount_sat)
+
             if parsed["status"] != "COMPLETE":
                 return ReceiptVerifyResult(
                     verified=False,
                     settlement_ref=settlement_ref,
-                    amount_sat=parsed["amount_sat"],
+                    amount_sat=amount_sat,
                     fee_sat=parsed["fee_sat"],
                     error=(
                         f"entry found but status is {parsed['status']}; "
@@ -1008,26 +1050,25 @@ class WavelengthAdapter(SettlementAdapter):
                     ),
                 )
 
-            if parsed["amount_sat"] != expected_amount_sat:
+            if amount_sat != expected_amount_sat:
                 return ReceiptVerifyResult(
                     verified=False,
                     settlement_ref=settlement_ref,
-                    amount_sat=parsed["amount_sat"],
+                    amount_sat=amount_sat,
                     fee_sat=parsed["fee_sat"],
                     error=(
                         f"amount mismatch: expected {expected_amount_sat}, "
-                        f"got {parsed['amount_sat']}"
+                        f"got {amount_sat}"
                     ),
                 )
 
             return ReceiptVerifyResult(
                 verified=True,
                 settlement_ref=settlement_ref,
-                amount_sat=parsed["amount_sat"],
+                amount_sat=amount_sat,
                 fee_sat=parsed["fee_sat"],
             )
 
-        # ── No matching entry found — fail closed ───────────────────
         return ReceiptVerifyResult(
             verified=False,
             settlement_ref=settlement_ref,

@@ -81,4 +81,6 @@ Any route conversion must be explicit in the quote and bound into the prepared p
 
 ## Network scope
 
-The checked-in `WavelengthAdapter` rejects `mainnet`, `testnet`, `signet`, and arbitrary network names. It is intentionally `regtest` only. The external Signet runner is an operational experiment, not a supported repository adapter mode.
+The checked-in `WavelengthAdapter` accepts `regtest` and an explicitly approved
+`signet` test run, while rejecting `mainnet`, `testnet`, and arbitrary network
+names. Signet is not a production or mainnet mode.

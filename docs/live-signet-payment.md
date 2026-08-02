@@ -82,7 +82,9 @@ Only txid prefixes are included in this document; the full references remain in 
 
 - A real Buzz binary or live Buzz channel was used in this particular run.
 - Two Hermes processes exchanged a real kind-9 `PaymentIntent`, `PaymentQuote`, or `PaymentReceipt` in this particular run.
-- The checked-in Python `WavelengthAdapter` supports Signet; it remains intentionally regtest-only.
+- The checked-in Python `WavelengthAdapter` now supports explicitly selected
+  Signet test runs; this historical evidence does not prove the two-Hermes
+  process boundary.
 - Restart/reconciliation behavior was exercised after an ambiguous live dispatch.
 - Any mainnet or production safety claim.
 

@@ -4,7 +4,8 @@
 **Peer boundary:** transport-neutral `PeerTransport`<br>
 **Current transport adapter:** Buzz NIP-29 kind-9 channel messages<br>
 **Current settlement instruction:** Lightning invoice<br>
-**Network scope of the checked-in Wavelength adapter:** regtest only
+**Network scope of the checked-in Wavelength adapter:** regtest by default;
+explicitly approved Signet test runs are supported; mainnet is forbidden
 
 This is the normative contract for `src/hermes_payments/`.
 

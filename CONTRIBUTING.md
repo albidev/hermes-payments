@@ -4,7 +4,8 @@ Thanks for contributing. This project handles payment authorization boundaries, 
 
 ## Non-negotiable rules
 
-- Keep the repository **regtest-only** until a documented deployment gate is approved by a human.
+- Keep settlement on **regtest by default**. An explicit human approval is
+  required for a Signet live gate; mainnet remains forbidden.
 - Never add seeds, private keys, passwords, macaroons, API tokens, real invoices, payment hashes, or relay credentials to code, fixtures, logs, or documentation.
 - Never serialize or transport `PaymentApproval`.
 - Never add an automatic retry path for an ambiguous settlement result.
@@ -72,7 +73,7 @@ Use short, descriptive prefixes:
 
 - [ ] Tests pass locally.
 - [ ] No secrets or real payment identifiers are present.
-- [ ] The change does not weaken regtest-only enforcement.
+- [ ] The change preserves explicit test-network enforcement and does not add a mainnet path.
 - [ ] `PaymentApproval` remains local-only.
 - [ ] Ambiguous execution remains fail-closed.
 - [ ] The protocol, adapter, or decision docs are updated.

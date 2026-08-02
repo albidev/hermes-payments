@@ -5,7 +5,7 @@ Tests the WavelengthAdapter with FakeWavecliExecutor.  No subprocess,
 no network, no real waved daemon.
 
 Covers:
-1. Regtest-only enforcement (construction guard)
+1. Explicit regtest/Signet enforcement (construction guard)
 2. Command construction (raw RPC, injection-safe)
 3. prepare() — raw PrepareSend, binding field validation, fee/expiry
 4. execute() — raw Send with exact send_intent_id, not high-level send
@@ -173,13 +173,11 @@ class TestRegtestGuard:
                 network="testnet",
             )
 
-    def test_signet_rejected(self):
-        """Network 'signet' is rejected."""
-        with pytest.raises(ValueError, match="regtest"):
-            WavelengthAdapter(
-                executor=FakeWavecliExecutor(),
-                network="signet",
-            )
+    def test_signet_accepted_explicitly(self):
+        """Network 'signet' is accepted as an explicit test network."""
+        adapter = _make_adapter(network="signet", rpc_server="localhost:11329")
+        assert adapter._network == "signet"
+        assert adapter._rpc_server == "localhost:11329"
 
     def test_empty_network_rejected(self):
         """Empty string network is rejected."""
@@ -331,6 +329,26 @@ class TestPrepare:
         assert result.rail == Rail.LIGHTNING
         assert isinstance(result.prepared_payload, bytes)
         assert len(result.prepared_payload) > 0
+
+    def test_prepare_accepts_protobuf_json_numeric_strings(self):
+        """wavecli JSON may encode protobuf numbers as decimal strings."""
+        executor = FakeWavecliExecutor()
+        executor.set_response({
+            **RAW_PREPARE_RESPONSE,
+            "amount_sat": "2100",
+            "expected_fee_sat": "10",
+            "expected_total_outflow_sat": "2110",
+            "expires_at_unix": str(FAR_FUTURE_EXPIRY),
+        })
+        result = _make_adapter(executor=executor).prepare(
+            receive_instruction=SAMPLE_RECEIVE,
+            amount_sat=2100,
+            max_fee_sat=100,
+        )
+        assert result.fee_sat == 10
+        payload = json.loads(result.prepared_payload)
+        assert payload["amount_sat"] == 2100
+        assert payload["expires_at_unix"] == FAR_FUTURE_EXPIRY
 
     def test_prepare_uses_raw_prepare_send_rpc(self):
         """prepare() calls raw PrepareSend, NOT high-level wavecli send."""
@@ -893,6 +911,41 @@ class TestVerifyReceipt:
         assert result.settlement_ref == "aa" * 32
         assert result.amount_sat == 2100
         assert result.fee_sat == 0
+
+    def test_verify_receipt_accepts_recent_activity_envelope(self):
+        """verify_receipt parses wavecli's real count/recent envelope."""
+        executor = FakeWavecliExecutor()
+        executor.set_response({
+            "count": 1,
+            "recent": RECV_ACTIVITY_RESPONSE,
+        })
+        adapter = _make_adapter(executor=executor)
+
+        result = adapter.verify_receipt(
+            settlement_ref="aa" * 32,
+            expected_amount_sat=2100,
+        )
+
+        assert result.verified is True
+        assert result.amount_sat == 2100
+
+    def test_verify_receipt_accepts_activity_entries_envelope(self):
+        """verify_receipt parses --format json's activity.entries wrapper."""
+        executor = FakeWavecliExecutor()
+        executor.set_response({
+            "activity": {
+                "entries": RECV_ACTIVITY_RESPONSE,
+            },
+        })
+        adapter = _make_adapter(executor=executor)
+
+        result = adapter.verify_receipt(
+            settlement_ref="aa" * 32,
+            expected_amount_sat=2100,
+        )
+
+        assert result.verified is True
+        assert result.amount_sat == 2100
 
     def test_verify_receipt_not_found_fail_closed(self):
         """verify_receipt returns verified=False when no matching entry."""

@@ -616,7 +616,7 @@ class TestDuplicateReplayRejection:
     """Duplicate or replayed intent/receipt cannot dispatch twice."""
 
     def test_duplicate_intent_not_received_twice(self):
-        """Bob receives the same intent; orchestrator accepts idempotently."""
+        """The transport deduplicates a replayed event before policy input."""
         intent = make_intent(amount_sat=PAYMENT_AMOUNT, expires_at=FAR_FUTURE_EXPIRY)
         alice_buzz = FakeExecutor()
         alice_transport = BuzzTransport(alice_buzz, channel=CHANNEL_UUID, clock=lambda: NOW)
@@ -628,14 +628,16 @@ class TestDuplicateReplayRejection:
 
         bob_transport = BuzzTransport(bob_buzz, channel=CHANNEL_UUID, clock=lambda: NOW)
         received = bob_transport.receive_messages()
-        assert len(received) == 2  # Buzz delivers both events
+        assert len(received) == 1
+        assert isinstance(received[0], PaymentIntent)
+        received_intent = received[0]
 
         wavecli = FakeWavecliExecutor()
         adapter = WavelengthAdapter(executor=wavecli, network="regtest")
         orch = PaymentOrchestrator(adapter=adapter, clock=lambda: NOW)
-        orch.submit(received[0])
+        orch.submit(received_intent)
         assert orch.state(intent.id).value == "submitted"
-        orch.submit(received[1])  # idempotent
+        orch.submit(received_intent)  # policy remains idempotent if called again
         assert orch.state(intent.id).value == "submitted"
 
     def test_duplicate_receipt_cannot_settle_twice(self):

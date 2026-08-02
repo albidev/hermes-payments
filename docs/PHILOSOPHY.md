@@ -73,7 +73,7 @@ The first vertical slice is intentionally narrow:
 - one adapter;
 - one human approval;
 - one receipt;
-- regtest only.
+- an explicitly approved test network only.
 
 The project earns broader scope by proving each boundary, not by putting “multi-rail autonomous commerce” in the README before the first live daemon has survived a timeout.
 

@@ -15,7 +15,7 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 - A rail-neutral policy engine with durable replay protection and an append-only audit log.
 - A transport-neutral `PeerTransport` contract carrying typed payment messages and delivery metadata.
 - A Buzz adapter using NIP-29 kind-9 channel messages.
-- A regtest-only Wavelength adapter using the exact prepared send intent returned by the raw RPC surface.
+- A Wavelength adapter for regtest and explicitly approved Signet test runs, using the exact prepared send intent returned by the raw RPC surface.
 - A deterministic two-Hermes integration proof using two independent `HermesPeer` instances and an in-memory transport.
 - A recorded live Signet Wavelength/Ark settlement proof, plus a combined live Buzz kind-9 coordination and receipt proof.
 
@@ -36,12 +36,12 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 | Rail-neutral policy/state core | Implemented | `src/hermes_payments/policy.py`, `state_machine.py` |
 | Peer transport contract | Implemented | `src/hermes_payments/peer_transport.py`, `peer.py` |
 | Buzz transport adapter | Implemented | NIP-29 kind 9, `src/hermes_payments/transport.py` |
-| Wavelength adapter | Implemented for **regtest only** | Raw `PrepareSend`/`Send`, recipient-side `activity --kind recv` |
+| Wavelength adapter | Implemented for **regtest + explicitly approved Signet** | Raw `PrepareSend`/`Send`, sender-side `activity --kind send`, recipient-side `activity --kind recv` |
 | Live Signet Wavelength settlement | Verified externally | [Settlement evidence](docs/live-signet-payment.md) |
-| Live Buzz + Wavelength Signet vertical | Verified externally; pending two-Hermes regtest gate | [Combined live evidence](docs/live-signet-buzz-vertical.md) |
-| Live Buzz kind-9 transport | Verified on local relay | [Transport evidence](docs/live-buzz-transport.md) |
+| Live Buzz + Wavelength Signet vertical | **Verified externally with two Hermes processes**; automatic recovery remains open | [Combined live evidence](docs/live-signet-buzz-vertical.md) |
+| Live Buzz kind-9 transport | Verified on hosted relay for the latest vertical; local relay smoke evidence retained | [Transport evidence](docs/live-buzz-transport.md) |
 | Two-Hermes transport-neutral proof | Implemented and tested | `tests/test_hermes_to_hermes_e2e.py` |
-| Two deployed Hermes processes + regtest settlement | Open operational gate | `docs/VERIFICATION.md` |
+| Two deployed Hermes processes + live Signet settlement | **Verified on Signet; manual same-state-root reconciliation verified** | `docs/VERIFICATION.md` |
 | Ark as a first-class protocol rail | Intentionally open | `docs/RAILS.md` |
 
 The repository currently models a Lightning invoice as the receive instruction. Wavelength may select an internal route such as `in_ark` while preparing that invoice; that internal route is not yet exposed as a distinct wire-level `Rail` value. This distinction is documented rather than hidden. See [Rails and settlement semantics](docs/RAILS.md).
@@ -59,7 +59,7 @@ flowchart LR
     D --> E[prepare\nnon-mutating]
     E --> F[Local human approval\nintent + quote + prepared hash]
     F --> G[Settlement adapter]
-    G --> H[Wavelength / wavecli\nregtest raw RPC]
+    G --> H[Wavelength / wavecli\ntest-network raw RPC]
     H --> I[Settlement rail\nLightning or adapter-selected route]
     I --> J[Recipient recv activity]
     J -->|PaymentReceipt| P

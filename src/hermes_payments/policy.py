@@ -628,7 +628,7 @@ class PaymentOrchestrator:
           other state are rejected *before* any mutation or adapter call).
         - Validates no prior receipt exists (replay prevention).
         - Validates the receipt amount matches the intent.
-        - Verifies the receipt against the adapter.
+        - Verifies the receipt against sender-side settlement activity.
         - Transitions to SETTLED via state_machine.transition.
         """
         rec = self._get_record(receipt.intent_id)
@@ -674,8 +674,10 @@ class PaymentOrchestrator:
                 f"current quote {rec.quote.quote_id if rec.quote else 'none'}"
             )
 
-        # Verify receipt against the adapter
-        verify = self._adapter.verify_receipt(
+        # Verify sender-side settlement activity. Recipient-side verification
+        # already happened before the peer published this receipt; calling
+        # verify_receipt here would incorrectly query recv on the sender.
+        verify = self._adapter.verify_sender_settlement(
             settlement_ref=receipt.settlement_ref,
             expected_amount_sat=receipt.amount_sat,
         )

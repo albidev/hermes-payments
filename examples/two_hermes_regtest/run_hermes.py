@@ -2,12 +2,15 @@
 
 Reads JSONL commands from stdin and writes JSONL responses to stdout.  Each
 process owns one state root, one audit log, one idempotency store, one Buzz
-channel, and one Wavelength regtest adapter.
+channel, and one Wavelength adapter on the explicitly selected test network.
 
-Environment variables (must be set externally):
+Configuration supplied externally:
     BUZZ_RELAY_URL, BUZZ_PRIVATE_KEY, BUZZ_AUTH_TAG
+    BUZZ_BIN (the Wavelength RPC endpoint is passed explicitly)
 
-No secret is read, logged, or constructed here.
+Per-role Buzz credentials are selected by the generated shell wrapper and
+inherited by the corresponding child process; they are never written to the
+wrapper itself.
 """
 from __future__ import annotations
 
@@ -19,32 +22,41 @@ from pathlib import Path
 
 from examples.two_hermes_regtest.process import HermesRegtestProcess, ProcessConfig
 
-# PYTHONPATH must include src/ and examples/
-from hermes_payments.adapter import WavelengthAdapter
+# PYTHONPATH must include the repository root and src/.
+from hermes_payments.adapter import SubprocessWavecliExecutor, WavelengthAdapter, redact_sensitive
 from hermes_payments.models import AgentIdentity
 from hermes_payments.transport import BuzzTransport, SubprocessExecutor
 
 
-def _build_transport(*, channel: str) -> BuzzTransport:
+def _build_transport(
+    *,
+    channel: str,
+    pubkey: str,
+    cursor_path: Path,
+    buzz_bin: str,
+) -> BuzzTransport:
     """Build a real Buzz transport using the external Buzz CLI."""
     executor = SubprocessExecutor(
-        buzz_bin=os.environ.get("BUZZ_BIN", "buzz"),
+        buzz_bin=buzz_bin,
         timeout=30,
     )
-    return BuzzTransport(executor=executor, channel=channel)
+    return BuzzTransport(
+        executor=executor,
+        channel=channel,
+        cursor_path=cursor_path,
+        local_pubkey=pubkey,
+    )
 
 
-def _build_adapter() -> WavelengthAdapter:
-    """Build a regtest Wavelength adapter.
+def _build_adapter(*, network: str, rpc_server: str | None) -> WavelengthAdapter:
+    """Build a Wavelength adapter for an explicitly selected test network.
 
-    RPC server is taken from ``WAVE_RPC_SERVER`` env var; defaults to
-    localhost:10029.  Credentials stay inside wavecli / the operator.
+    Credentials stay inside wavecli / the operator.
     """
-    rpc_server = os.environ.get("WAVE_RPC_SERVER", "localhost:10029")
     return WavelengthAdapter(
-        executor=None,  # type: ignore[arg-type]
-        rpc_server=rpc_server,
-        network="regtest",
+        executor=SubprocessWavecliExecutor(),
+        rpc_server=rpc_server or "localhost:10029",
+        network=network,
         no_tls=True,
         no_macaroons=True,
     )
@@ -58,11 +70,15 @@ def main() -> int:
     parser.add_argument("--approver-pubkey", required=True)
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--network", default="regtest")
+    parser.add_argument("--wave-rpc-server", default=None)
     parser.add_argument("--buzz-bin", default=None)
     args = parser.parse_args()
 
-    if args.network != "regtest":
-        sys.stderr.write("regtest-only\n")
+    if args.network not in {"regtest", "signet"}:
+        sys.stderr.write("only regtest or explicitly selected signet is supported\n")
+        return 1
+    if args.network == "signet" and not args.wave_rpc_server:
+        sys.stderr.write("signet requires --wave-rpc-server\n")
         return 1
 
     state_root = Path(args.state_root)
@@ -80,8 +96,17 @@ def main() -> int:
         approver=approver,
     )
 
-    transport = _build_transport(channel=args.channel)
-    adapter = _build_adapter()
+    buzz_bin = args.buzz_bin or os.environ.get("BUZZ_BIN", "buzz")
+    transport = _build_transport(
+        channel=args.channel,
+        pubkey=args.pubkey,
+        cursor_path=state_root / "buzz_cursor.json",
+        buzz_bin=buzz_bin,
+    )
+    adapter = _build_adapter(
+        network=args.network,
+        rpc_server=args.wave_rpc_server,
+    )
 
     process = HermesRegtestProcess(
         config=config,
@@ -106,7 +131,7 @@ def main() -> int:
             response = process.handle_line(line)
         except Exception as exc:
             response = json.dumps(
-                {"event": "error", "error": str(exc)},
+                {"event": "error", "error": redact_sensitive(str(exc))},
                 sort_keys=True,
             )
         sys.stdout.write(response + "\n")

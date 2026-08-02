@@ -15,7 +15,9 @@ Covers:
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import cast
+from unittest.mock import patch as mock_patch
 
 import pytest
 
@@ -45,6 +47,7 @@ from hermes_payments.transport import (
     EnvelopeValidationError,
     FakeExecutor,
     RawBuzzEvent,
+    SubprocessExecutor,
     _channel_from_tags,
     validate_received_event,
 )
@@ -61,6 +64,99 @@ from tests.fixtures import (
 
 # Test channel UUID
 CHANNEL_UUID = "550e8400-e29b-41d4-a716-446655440000"
+
+
+class TestSubprocessExecutor:
+    def test_send_builds_expected_buzz_command(self):
+        calls = []
+        content = '{"protocol":"hermes-payments"}'
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"event_id": "event-send-1"}),
+                stderr="",
+            )
+
+        with mock_patch("hermes_payments.transport.subprocess.run", side_effect=fake_run):
+            result = SubprocessExecutor(buzz_bin="/opt/buzz", timeout=7).send(
+                channel=CHANNEL_UUID,
+                content=content,
+            )
+
+        assert result.event_id == "event-send-1"
+        assert calls == [
+            (
+                [
+                    "/opt/buzz",
+                    "messages",
+                    "send",
+                    "--channel",
+                    CHANNEL_UUID,
+                    "--content",
+                    content,
+                ],
+                {"capture_output": True, "text": True, "timeout": 7},
+            )
+        ]
+
+    def test_get_builds_filters_and_parses_events(self):
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs))
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps([
+                    {
+                        "id": "event-get-1",
+                        "pubkey": "aa" * 32,
+                        "kind": 9,
+                        "content": "{}",
+                        "tags": [["h", CHANNEL_UUID]],
+                        "created_at": NOW,
+                    }
+                ]),
+                stderr="",
+            )
+
+        with mock_patch("hermes_payments.transport.subprocess.run", side_effect=fake_run):
+            events = SubprocessExecutor(buzz_bin="/opt/buzz", timeout=9).get(
+                channel=CHANNEL_UUID,
+                kinds=[9],
+                since=NOW - 1,
+                limit=3,
+            )
+
+        assert events == [
+            RawBuzzEvent(
+                id="event-get-1",
+                pubkey="aa" * 32,
+                kind=9,
+                content="{}",
+                tags=[["h", CHANNEL_UUID]],
+                created_at=NOW,
+            )
+        ]
+        assert calls == [
+            (
+                [
+                    "/opt/buzz",
+                    "messages",
+                    "get",
+                    "--channel",
+                    CHANNEL_UUID,
+                    "--kinds",
+                    "9",
+                    "--since",
+                    str(NOW - 1),
+                    "--limit",
+                    "3",
+                ],
+                {"capture_output": True, "text": True, "timeout": 9},
+            )
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +720,54 @@ class TestBuzzTransport:
         assert len(messages) == 2
         assert isinstance(messages[0], PaymentIntent)
         assert isinstance(messages[1], PaymentQuote)
+
+    def test_receive_deduplicates_across_polls_and_restart(self, tmp_path):
+        ex = FakeExecutor()
+        cursor_path = tmp_path / "buzz-cursor.json"
+        intent = make_intent()
+        ex.inject_event(
+            RawBuzzEvent(
+                id="ev-once", pubkey=SENDER_PUBKEY, kind=9,
+                content=encode_content(intent),
+                tags=[["h", CHANNEL_UUID]], created_at=NOW,
+            )
+        )
+
+        transport = BuzzTransport(
+            ex,
+            channel=CHANNEL_UUID,
+            clock=lambda: NOW,
+            cursor_path=cursor_path,
+        )
+        assert len(transport.receive_messages()) == 1
+        assert transport.receive_messages() == []
+        assert cursor_path.exists()
+
+        restored = BuzzTransport(
+            ex,
+            channel=CHANNEL_UUID,
+            clock=lambda: NOW,
+            cursor_path=cursor_path,
+        )
+        assert restored.receive_messages() == []
+
+    def test_receive_filters_local_author(self):
+        ex = FakeExecutor()
+        intent = make_intent()
+        ex.inject_event(
+            RawBuzzEvent(
+                id="ev-local", pubkey=SENDER_PUBKEY, kind=9,
+                content=encode_content(intent),
+                tags=[["h", CHANNEL_UUID]], created_at=NOW,
+            )
+        )
+        transport = BuzzTransport(
+            ex,
+            channel=CHANNEL_UUID,
+            clock=lambda: NOW,
+            local_pubkey=SENDER_PUBKEY,
+        )
+        assert transport.receive_messages() == []
 
     def test_receive_skips_invalid_events(self):
         ex = FakeExecutor()

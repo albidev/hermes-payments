@@ -91,7 +91,10 @@ The `h` channel tag is managed by Buzz. Received events are treated as untrusted
 2. `execute()` — exact prepared payload, after local approval;
 3. `verify_receipt()` — independent recipient-side settlement check.
 
-`WavelengthAdapter` is the current concrete implementation. It is hard-gated to `regtest` and uses raw RPC because high-level `wavecli send` prepares a fresh intent internally.
+`WavelengthAdapter` is the current concrete implementation. It is hard-gated to
+explicitly supported test networks (`regtest` by default and approved `signet`)
+and uses raw RPC because high-level `wavecli send` prepares a fresh intent
+internally.
 
 ## Trust boundaries
 

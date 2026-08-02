@@ -24,13 +24,57 @@ The project separates deterministic correctness from live operational correctnes
 
 ### Wavelength adapter
 
-`tests/test_wavelength_adapter.py` covers regtest-only construction, injection-safe command lists, raw `PrepareSend` and `Send`, exact prepared intent binding, fee/amount/expiry/payment-hash validation, strict status parsing, recipient-side `activity --kind recv`, redaction, and ambiguous outcomes.
+`tests/test_wavelength_adapter.py` covers explicit regtest/Signet construction,
+unsupported-network rejection, injection-safe command lists, raw `PrepareSend`
+and `Send`, exact prepared intent binding, fee/amount/expiry/payment-hash
+validation, strict status parsing, recipient-side `activity --kind recv`,
+sender-side `activity --kind send`, both `activity.entries` and top-level
+`recent` JSON envelopes, redaction, and ambiguous outcomes.
 
 ### Two-Hermes composition
 
 `tests/test_hermes_to_hermes_e2e.py` composes two independent `HermesPeer` stacks over `InMemoryTransportHub`, with no Buzz or network dependency. It demonstrates adapter-complete settlement and receipt-mediated reconciliation.
 
 `tests/test_two_hermes_e2e.py` remains the Buzz-envelope composition proof with separate fake Buzz and Wavelength executors. It demonstrates adapter-complete settlement, receipt-mediated reconciliation settlement, replay protection, and tamper negatives.
+
+## Live testbook: P6 Signet + hosted Buzz
+
+**Latest rerun:** 2026-08-02  \
+**Relay:** `wss://albi-lab.communities.buzz.xyz`  \
+**Channel:** `14df4f9b-cf92-4026-b057-45f7d31fd5b4`  \
+**Wallets:** two isolated Wavelength daemons on `127.0.0.1:11329` (Alice) and `127.0.0.1:11339` (Bob)  \
+**Network:** Signet only
+
+This is an operational test, not part of the deterministic suite. It requires explicit human approval, funded Signet wallets, a fresh Bob invoice for exactly `2100` sat, the two role-specific Buzz keys already loaded in the shell, and the hosted relay membership already established. Never paste keys, invoices, macaroons, or full payment hashes into the test output.
+
+### Procedure used
+
+1. Create a fresh Bob receive invoice for `2100` sat; save the JSON locally and validate its amount without printing the invoice.
+2. Start the two-process supervisor with separate Alice/Bob state roots, `--network signet`, the two Wavelength RPC endpoints, `--skip-buzz-health` (the hosted health endpoint is RBAC-protected), and the hosted Buzz relay.
+3. Exchange `PaymentIntent` and `PaymentQuote` over Buzz kind 9.
+4. Run `PrepareSend`, inspect the prepared payload, and approve the exact `(intent_id, quote_id, prepared_hash)` tuple locally.
+5. Execute the raw prepared send exactly once. An immediate `PENDING` is expected and is fail-closed; do not retry.
+6. Query both wallets until the same settlement reference is `COMPLETE` on Alice `send` and Bob `recv`.
+7. Bob verifies the incoming activity and publishes `PaymentReceipt` over Buzz; Alice receives and accepts it.
+8. For the rerun, the supervisor was stopped after dispatch and restarted with the same state root. The receipt was reconciled without a second send.
+
+A negative preflight was also exercised: a `1`-sat Bob invoice was rejected against the exact `2100`-sat quote before `Send`; no payment was dispatched. The successful rerun used a fresh `2100`-sat invoice.
+
+### Latest observed result
+
+```text
+PaymentIntent:       accepted by Bob
+PaymentQuote:        accepted by Alice
+PrepareSend:         2100 sat, fee 0 sat
+raw Send:            PENDING, no automatic retry
+Alice activity:      SEND COMPLETE, -2100 sat, fee 0 sat
+Bob activity:        RECV COMPLETE, 2100 sat, fee 0 sat
+PaymentReceipt:      Bob verified/published; Alice accepted
+Alice final state:   settled=1
+Outcome:             PASS
+```
+
+The raw Wavelength JSON was observed as `{"activity":{"entries":[...]}}`; another formatter exposes a top-level `recent` list. Both forms are now covered by the adapter and regression tests. The internal settlement route was `in_ark`; this agent-to-agent payment therefore has a Wavelength payment/activity reference, not a separate on-chain mempool transaction. Bootstrap funding transactions are distinct evidence and must not be reported as the payment transaction.
 
 ## Commands
 

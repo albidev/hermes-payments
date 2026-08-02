@@ -1,14 +1,51 @@
 # Live Signet Buzz + Wavelength Vertical Evidence
 
-**Run class:** live coordination plus settlement evidence  \
+**Run class:** live two-process coordination plus settlement evidence  \
 **Network:** Bitcoin Signet  \
-**Date:** 2026-08-01  \
+**Latest validation:** 2026-08-02  \
 **Wavelength operator:** `signet.wavelength.lightning.finance:443`  \
-**Wavelength version:** `0.1.99`
+**Wavelength version:** `0.1.99`  \
+**Latest Buzz relay:** `wss://albi-lab.communities.buzz.xyz`
 
-This document records the live Signet run that combined a real Buzz channel exchange with a real Wavelength settlement. It is deliberately narrower than a production claim: the run used two isolated Wavelength daemons, two ephemeral Buzz identities, and a local Buzz relay. The checked-in `WavelengthAdapter` remains regtest-only.
+This document records the live Signet run that combined a real Buzz channel exchange with a real Wavelength settlement. The latest validation used two isolated Hermes processes, two isolated Wavelength daemons, two ephemeral Buzz identities, and the hosted `albi-lab` Buzz relay. The earlier local-relay run is retained as historical evidence. The checked-in `WavelengthAdapter` supports this only as an explicitly approved Signet test mode; it is not a production or mainnet mode.
 
-## Result
+## Latest rerun result (2026-08-02)
+
+The P6 runner started two real Hermes processes with separate state roots and used the hosted Buzz relay. It reached the exact prepared execution gate and returned the expected post-dispatch `PENDING` result. A direct Wavelength activity query then showed the settlement complete; the same state root was restarted and reconciled without another send.
+
+```text
+Hermes processes: two, Alice + Bob, separate state roots
+Buzz relay:       hosted albi-lab community
+PaymentIntent:    accepted over Buzz kind 9
+PaymentQuote:     accepted over Buzz kind 9
+PrepareSend:      amount=2100 sats, expected_fee=0 sats
+raw Send:         initial status=PENDING, automatic_retry=false
+Alice activity:   SEND COMPLETE, amount=-2100 sats, fee=0 sats
+Bob activity:     RECV COMPLETE, amount=2100 sats, fee=0 sats
+PaymentReceipt:   verified/published by Bob, accepted by Alice
+Alice final:      settled=1
+Result:           PASS
+```
+
+The live runner's first activity poll exposed a driver-only parsing gap: the `--json` command returns `{"activity":{"entries": [...]}}`, while another CLI formatter returns a top-level `recent` list. The checked-in adapter and the operator test driver used for the rerun were updated to accept both forms. The payment itself was not retried; reconciliation used the already-dispatched payment and ended with Alice `settled`.
+
+## On-chain verification boundary
+
+The latest Wavelength activity record reports `txid=""`, `confirmation_height=0`, and a virtual `vtxo_outpoint`; the payment/activity reference is not an on-chain Bitcoin transaction. Querying the payment reference and the virtual outpoint against the Mempool Signet API returned HTTP 404, as expected for the internal `in_ark` route.
+
+The wallet's separate bootstrap deposit is on-chain and independently verifiable:
+
+```text
+bootstrap deposit txid: cf6aca79286fa51459280352eac93bbd6a447074dc078aebad9283a3666bc9a
+network:                Signet
+block height:           315726
+Mempool:                https://mempool.space/signet/tx/cf6aca79286fa51459280352eac93bbd6a447074dc078aebad9283a3666bc9a
+```
+
+That txid proves wallet funding only. It is not the 2100-sat agent payment, which has no separate mempool transaction in this run.
+
+## Baseline result (2026-08-01)
+
 
 ```text
 PaymentIntent:   accepted over Buzz kind 9
@@ -25,17 +62,27 @@ The initial `PENDING` response was treated as ambiguous. No automatic retry was 
 
 | Item | Value |
 |---|---|
-| Buzz channel | `3e66c65a-d5cb-4cc4-b186-03e27959dfea` |
-| Alice public key | `3cd5f417...` |
-| Bob public key | `3e90b200...` |
+| Buzz channel | latest `14df4f9b-cf92-4026-b057-45f7d31fd5b4`; historical baseline `3e66c65a-d5cb-4cc4-b186-03e27959dfea` |
+| Alice public key | latest `c55bd0f6...`; historical baseline `3cd5f417...` |
+| Bob public key | latest `8ad4f9b4...`; historical baseline `3e90b200...` |
 | Channel scope | NIP-29 `h` tag equal to the channel UUID |
-| Relay | local Buzz relay at `127.0.0.1:3030` |
+| Relay | hosted Buzz relay `wss://albi-lab.communities.buzz.xyz` (latest run); local `127.0.0.1:3030` for the historical baseline |
 
 Only public identifiers and abbreviated evidence handles are recorded. Private keys, wallet passwords, the BOLT-11 invoice, the full prepared hash, and the full payment hash remain local and are not reproduced here. The shared payment-hash prefix is included only to show that the independently observed sender and recipient records refer to the same settlement.
 
 ## Buzz protocol exchange
 
-All three events were stored by the real relay as NIP-29 kind-9 messages with protocol `hermes-payments`, version `1`, and the channel `h` tag above.
+All three events were stored by the real hosted relay as NIP-29 kind-9 messages with protocol `hermes-payments`, version `1`, and the latest channel `h` tag.
+
+### Latest rerun (2026-08-02)
+
+| Message | Event/message ID prefix | Domain/receipt ID prefix | Author |
+|---|---|---|---|
+| `payment_intent` | `4a68d232...` | `c04d22d7...` | Alice |
+| `payment_quote` | `fbc32c6a...` | `p6-signe...` | Bob |
+| `payment_receipt` | `892f5bfd...` | `80133d55...` | Bob |
+
+### Historical baseline (2026-08-01)
 
 | Message | Event ID | Domain ID | Author |
 |---|---|---|---|
@@ -43,11 +90,34 @@ All three events were stored by the real relay as NIP-29 kind-9 messages with pr
 | `payment_quote` | `791dd59a...` | `27fc5faa...` | Bob |
 | `payment_receipt` | `e4db7082...` | `5f21a755...` | Bob |
 
-The intent requested `amount_sat=2100` and `max_fee_sat=0`. The quote carried a real BOLT-11 receive instruction, `rail=lightning`, and `fee_sat=0`. The quote identifier is `hermes-payments-testnet-quote-1785586627`; the legacy `testnet` label is an application idempotency label and does not mean Bitcoin testnet3 was used. The network for this run was Signet.
+The latest intent requested `amount_sat=2100` and `max_fee_sat=0`. The quote carried a real BOLT-11 receive instruction, `rail=lightning`, and `fee_sat=0`. The latest application quote label used the `p6-signet-live-quote-<timestamp>` prefix; the network was Signet. The historical `testnet` label in the baseline run was an application idempotency label and did not mean Bitcoin testnet3.
 
 `PaymentApproval` was not sent over Buzz. It remained a local-only approval binding, as required by the protocol contract.
 
 ## Prepared settlement and reconciliation
+
+### Latest rerun (2026-08-02)
+
+```text
+PaymentIntent:       c04d22d7...
+PaymentQuote:        p6-signet-live-quote-<timestamp>
+prepared_hash:       dd392aaf...
+amount_sat:          2100
+expected_fee_sat:    0
+internal route:      IN_ARK
+payment_hash:        <redacted; public prefix 99e25e44 only>
+```
+
+The local approval was bound to the exact `(intent_id, quote_id, prepared_hash)` tuple. The raw `Send` consumed the exact prepared intent and returned `ENTRY_STATUS_PENDING` with `actual_amount_sat=2100`. Because a post-dispatch pending result is ambiguous, the runner did not retry.
+
+Independent activity inspection then produced:
+
+```text
+Alice: kind=send  status=complete amount_sat=-2100 fee_sat=0 payment_hash=<redacted; public prefix 99e25e44>
+Bob:   kind=recv  status=complete amount_sat=2100  fee_sat=0 payment_hash=<redacted; public prefix 99e25e44>
+```
+
+### Historical baseline (2026-08-01)
 
 The sender used the raw Wavelength RPC path:
 
@@ -85,9 +155,9 @@ The same payment hash, amount, and zero fee were present on both sides. Only aft
 
 ## What this does not prove
 
-- The checked-in Python `WavelengthAdapter` supports Signet; it intentionally rejects non-regtest construction.
-- Two deployed Hermes agent processes, rather than the live driver and two isolated wallet daemons, were exercised end to end.
-- Restart recovery after the ambiguous dispatch was tested. This run performed manual activity reconciliation only.
+- The checked-in Python `WavelengthAdapter` supports Signet only when explicitly
+  selected and intentionally rejects mainnet, testnet, and arbitrary networks.
+- Automatic restart recovery is not claimed. The latest test did verify manual reconciliation after the supervisor was stopped and restarted with the same state root.
 - Any mainnet, production, custody, operator-availability, or economic-safety claim.
 
-The narrow original Wavelength-only settlement remains documented in [live-signet-payment.md](live-signet-payment.md). The local relay transport smoke test remains documented in [live-buzz-transport.md](live-buzz-transport.md). This file is the combined Signet evidence; it does not erase the distinction between live evidence and the deterministic offline suite.
+The narrow original Wavelength-only settlement remains documented in [live-signet-payment.md](live-signet-payment.md). The historical local relay transport smoke test remains documented in [live-buzz-transport.md](live-buzz-transport.md). This file is now the authoritative combined Signet two-process evidence; it does not erase the distinction between live evidence and the deterministic offline suite.

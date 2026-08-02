@@ -65,6 +65,6 @@ The intent carried `amount_sat=2100` and `max_fee_sat=0`. The quote carried `rai
 - No Wavelength `PrepareSend` or `SendPrepared` call was made by this transport smoke test.
 - No `PaymentReceipt` was published, because no settlement occurred in this run.
 - The quote used a test-only receive instruction and must not be treated as a payable invoice.
-- This is not yet the two-Hermes-process regtest gate.
+- This is not yet the two-Hermes-process live gate.
 
-This document remains intentionally transport-only: its quote used a test-only receive instruction and no settlement occurred in that smoke test. The later [combined Signet vertical](live-signet-buzz-vertical.md) demonstrates the same kind-9 boundary with a real invoice, reconciled Wavelength settlement, and a `PaymentReceipt` emitted only after Bob's verified incoming activity. The two-deployed-Hermes-process regtest gate and restart testing remain open.
+This document remains intentionally transport-only: its quote used a test-only receive instruction and no settlement occurred in that smoke test. The later [combined Signet vertical](live-signet-buzz-vertical.md) demonstrates the same kind-9 boundary with a real invoice, reconciled Wavelength settlement, and a `PaymentReceipt` emitted only after Bob's verified incoming activity through two Hermes processes. Automatic recovery after an ambiguous dispatch remains open.

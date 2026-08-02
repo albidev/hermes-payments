@@ -30,11 +30,14 @@ Safety boundaries (non-negotiable)
 from __future__ import annotations
 
 import json
+import os
 import subprocess
+import tempfile
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from .envelope import WIRE_KIND, decode_content, encode_content
@@ -422,12 +425,60 @@ class BuzzTransport:
         *,
         channel: str,
         clock: Optional[Callable[[], int]] = None,
+        cursor_path: Optional[Path] = None,
+        local_pubkey: Optional[str] = None,
     ):
         if not channel:
             raise ValueError("channel UUID is required")
         self._executor = executor
         self._channel = channel
         self._clock = clock or (lambda: int(time.time()))
+        self._cursor_path = cursor_path
+        self._local_pubkey = local_pubkey
+        self._seen_event_ids: set[str] = set()
+        self._load_cursor()
+
+    def _load_cursor(self) -> None:
+        """Load the local event cursor without touching signing credentials."""
+        if self._cursor_path is None or not self._cursor_path.exists():
+            return
+        try:
+            with self._cursor_path.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            event_ids = data.get("event_ids", [])
+            if isinstance(event_ids, list):
+                self._seen_event_ids = {
+                    event_id for event_id in event_ids if isinstance(event_id, str)
+                }
+        except (OSError, json.JSONDecodeError, TypeError):
+            # A corrupt cursor must not make the transport silently trust
+            # messages.  Starting from an empty cursor is safe because the
+            # process boundary deduplicates its durable inbox.
+            self._seen_event_ids = set()
+
+    def _save_cursor(self) -> None:
+        """Persist the receive cursor atomically when a path was configured."""
+        if self._cursor_path is None:
+            return
+        self._cursor_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=self._cursor_path.parent,
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(
+                    {"event_ids": sorted(self._seen_event_ids)[-10000:]},
+                    handle,
+                    sort_keys=True,
+                )
+            os.replace(tmp_path, self._cursor_path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     def send(self, message: PaymentMessage) -> str:
         """Send any transportable payment message via Buzz."""
@@ -455,14 +506,32 @@ class BuzzTransport:
         limit: Optional[int] = None,
     ) -> list[PeerMessage]:
         """Fetch, validate, and annotate payment messages from Buzz."""
+        if limit is not None and limit < 0:
+            raise ValueError("limit must be zero or greater")
+        if limit == 0:
+            return []
+        # Do not apply the remote limit before local de-duplication: a relay
+        # may return the same newest events on every poll, starving older
+        # unseen messages.  Fetch the scoped batch, then apply ``limit`` to
+        # messages that are genuinely new to this process.
         raw_events = self._executor.get(
             channel=self._channel,
             kinds=[WIRE_KIND],
             since=since,
-            limit=limit,
+            limit=None,
         )
         messages: list[PeerMessage] = []
+        cursor_changed = False
         for event in raw_events:
+            if event.id in self._seen_event_ids:
+                continue
+            self._seen_event_ids.add(event.id)
+            cursor_changed = True
+
+            # A channel query is a broadcast view.  A configured process
+            # endpoint must not hand its own signed writes back as peer input.
+            if self._local_pubkey is not None and event.pubkey == self._local_pubkey:
+                continue
             try:
                 message = validate_received_event(
                     event,
@@ -479,6 +548,10 @@ class BuzzTransport:
                 )
             except EnvelopeValidationError:
                 continue
+            if limit is not None and len(messages) >= limit:
+                break
+        if cursor_changed:
+            self._save_cursor()
         return messages
 
     def receive(self, *, limit: Optional[int] = None) -> list[PeerMessage]:

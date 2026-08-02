@@ -30,11 +30,14 @@ The high-level `wavecli send` command prepares internally. A prepare/approve/exe
 
 The recipient verifies its own incoming activity (`activity --kind recv`) by settlement reference and amount. Sender-side “send succeeded” output is not sufficient evidence for a recipient receipt.
 
-## ADR-006 — Reject non-regtest Wavelength configuration
+## ADR-006 — Allow only explicitly approved test networks
 
 **Status:** Accepted
 
-The adapter rejects `mainnet`, `testnet`, `signet`, and arbitrary network names. Network expansion requires a separate explicit gate, documentation, and tests.
+The adapter accepts `regtest` by default and `signet` only when explicitly
+selected for a human-approved live test. It rejects `mainnet`, `testnet`, and
+arbitrary network names. Any future network requires a separate explicit gate,
+documentation, and tests.
 
 ## ADR-007 — Treat ambiguity as reconciliation
 

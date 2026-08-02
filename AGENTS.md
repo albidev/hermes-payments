@@ -2,7 +2,8 @@
 
 ## Non-negotiable safety boundaries
 
-1. Regtest only until a human explicitly approves a future deployment gate.
+1. Use regtest by default. Signet is allowed only after an explicit human
+   approval for that live test gate; mainnet remains forbidden.
 2. Never read, log, transmit, or request seeds, passwords, macaroons, private keys, or API tokens.
 3. A Buzz message/event is not payment authorization. Execution requires an explicit local human approval bound to `(intent_id, quote_id, prepared_hash)`.
 4. Every intent has expiry, `max_fee_sat`, recipient identity, and idempotency key.

@@ -1,18 +1,21 @@
 """P6 supervisor tests — no live subprocess, no real Buzz, no Wavelength.
 
 The tests exercise argument validation, process-wrapper generation, and the
-supervisor's health-check seam with mocked subprocess responses.
+supervisor's HTTP health-check seam with mocked responses.
 """
 from __future__ import annotations
 
+import io
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch as mock_patch
 
 import pytest
 
-from examples.two_hermes_regtest import run
+from examples.two_hermes_regtest import run, run_hermes
 from examples.two_hermes_regtest.run import (
+    _redact_payload,
     _redacted_identifier,
     _verify_buzz_relay_health,
     _write_process_command,
@@ -35,6 +38,15 @@ def test_redacted_identifier_long_value_is_redacted():
     assert val not in redacted
 
 
+def test_redact_payload_preserves_long_error_diagnostics():
+    payload = {
+        "error": "adapter prepare failed: wavecli command failed with status 1: rpc endpoint refused"
+    }
+    redacted = _redact_payload(payload)
+    assert "wavecli command failed" in redacted["error"]
+    assert "rpc endpoint refused" in redacted["error"]
+
+
 def test_write_process_command_creates_executable_wrapper(tmp_path: Path):
     state_root = tmp_path / "alice"
     _write_process_command(
@@ -43,6 +55,9 @@ def test_write_process_command_creates_executable_wrapper(tmp_path: Path):
         channel=CHANNEL,
         pubkey=VALID_KEY,
         approver_pubkey=VALID_APPROVER,
+        buzz_bin="/opt/buzz/bin/buzz",
+        network="signet",
+        wave_rpc_server="localhost:11329",
     )
 
     wrapper = state_root / "run.sh"
@@ -54,13 +69,31 @@ def test_write_process_command_creates_executable_wrapper(tmp_path: Path):
     assert CHANNEL in content
     assert VALID_KEY in content
     assert VALID_APPROVER in content
-    assert "regtest" in content
+    assert "--buzz-bin /opt/buzz/bin/buzz" in content
+    assert '--network "signet"' in content
+    assert "--wave-rpc-server localhost:11329" in content
+    assert "BUZZ_ALICE_PRIVATE_KEY" in content
+    assert "BUZZ_ALICE_AUTH_TAG" in content
+    assert "signet" in content
 
 
 def test_main_rejects_non_regtest(capsys):
     with pytest.raises(SystemExit) as exc:
         main()
     assert exc.value.code == 2
+
+
+def test_child_rejects_signet_without_explicit_rpc_server():
+    with mock_patch("sys.argv", [
+        "run_hermes.py",
+        "--role", "alice",
+        "--channel", CHANNEL,
+        "--pubkey", VALID_KEY,
+        "--approver-pubkey", VALID_APPROVER,
+        "--state-root", "/tmp/hermes-p6-test",
+        "--network", "signet",
+    ]):
+        assert run_hermes.main() == 1
 
 
 def test_supervisor_rejects_invalid_pubkey_length():
@@ -77,21 +110,28 @@ def test_supervisor_rejects_invalid_pubkey_length():
         assert main() == 1
 
 
-def test_verify_buzz_relay_health_true_on_missing_binary():
-    env = os.environ.copy()
-    env["BUZZ_BIN"] = "definitely-not-a-real-buzz-binary-xyz"
-    with mock_patch.dict(os.environ, env, clear=True):
-        assert _verify_buzz_relay_health() is True
+def test_verify_buzz_relay_health_fails_closed_when_probe_fails():
+    with mock_patch.object(run, "urlopen", side_effect=OSError("unreachable")):
+        assert _verify_buzz_relay_health() is False
 
 
-def test_verify_buzz_relay_health_false_on_failed_relay_info():
-    def failing_run(*_args, **_kwargs):
-        class Result:
-            returncode = 1
-            stderr = "relay unreachable"
-        return Result()
+def test_verify_buzz_relay_health_accepts_explicit_probe():
+    class Response:
+        status = 200
 
-    with mock_patch("subprocess.run", side_effect=failing_run):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    with mock_patch.object(run, "urlopen", return_value=Response()):
+        with mock_patch.dict(os.environ, {"BUZZ_HEALTH_URL": "http://health.test"}, clear=False):
+            assert _verify_buzz_relay_health() is True
+
+
+def test_verify_buzz_relay_health_false_on_failed_probe():
+    with mock_patch.object(run, "urlopen", side_effect=OSError("relay unreachable")):
         assert _verify_buzz_relay_health() is False
 
 
@@ -106,7 +146,10 @@ def test_supervisor_starts_children_and_creates_wrappers(tmp_path: Path):
 
             def __init__(self):
                 self.stdin = None
-                self.stdout = None
+                role = Path(cmd[0]).parent.name
+                self.stdout = io.StringIO(
+                    json.dumps({"event": "ready", "role": role}) + "\n"
+                )
                 self.stderr = None
 
             def poll(self):

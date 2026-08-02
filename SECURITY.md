@@ -12,7 +12,8 @@ Do not open a public issue containing credentials, private keys, real invoices, 
 
 ## Security invariants
 
-1. The Wavelength adapter rejects anything other than `regtest`.
+1. The Wavelength adapter accepts only `regtest` or an explicitly selected
+   Signet test run; mainnet, testnet, and arbitrary networks are rejected.
 2. Buzz messages are coordination and audit data, not spending authorization.
 3. `PaymentApproval` never crosses the transport boundary.
 4. Approval binds exactly `(intent_id, quote_id, prepared_hash)`.
@@ -34,7 +35,7 @@ Do not open a public issue containing credentials, private keys, real invoices, 
 | Broadcast result is ambiguous | Enter `RECONCILIATION_REQUIRED`; do not retry. |
 | False receipt | Verify recipient-side `recv` activity, reference, amount, and `COMPLETE`. |
 | Sensitive data in errors | Redact invoices, macaroon paths, and 64-character hashes. |
-| Mainnet accidentally selected | Reject non-regtest configuration at adapter construction. |
+| Mainnet accidentally selected | Reject unsupported configuration at adapter construction; no mainnet default exists. |
 
 ## Known limitations
 

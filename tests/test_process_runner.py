@@ -117,7 +117,18 @@ def _relay_last_event(
 
 
 class TestProcessConfig:
-    def test_process_config_is_explicit_and_regtest_only(self, tmp_path: Path):
+    def test_process_config_accepts_explicit_signet(self, tmp_path: Path):
+        config = ProcessConfig(
+            role="alice",
+            identity=SENDER_IDENTITY,
+            channel=CHANNEL,
+            state_root=tmp_path / "alice-signet",
+            network="signet",
+        )
+
+        assert config.network == "signet"
+
+    def test_process_config_rejects_unsupported_networks(self, tmp_path: Path):
         config = _alice_config(tmp_path)
 
         assert config.role == "alice"
@@ -128,8 +139,8 @@ class TestProcessConfig:
                 role="bob",
                 identity=RECIPIENT_IDENTITY,
                 channel=CHANNEL,
-                state_root=tmp_path / "signet",
-                network="signet",
+                state_root=tmp_path / "mainnet",
+                network="mainnet",
             )
 
     def test_process_config_rejects_missing_channel_and_state_root(self, tmp_path: Path):
@@ -324,11 +335,18 @@ class TestHermesRegtestProcessLifecycle:
         prepared = _send_json(alice, {"command": "prepare"})
         assert prepared["event"] == "prepare"
         assert prepared["fee_sat"] == 10
+        prepared_record = alice._orchestrator._intents[intent.id].prepared
+        assert prepared_record is not None
+        prepared_hash = prepared_record.prepared_hash
+        assert prepared["prepared_hash"] == prepared_hash[:8] + "..."
 
         _send_json(alice, {
             "command": "approve",
             "intent_id": intent.id,
             "quote_id": quote.quote_id,
+            # The process resolves this display-safe prefix against the
+            # prepared record for the same intent; the full hash never leaves
+            # the process boundary.
             "prepared_hash": prepared["prepared_hash"],
         })
 
@@ -338,6 +356,21 @@ class TestHermesRegtestProcessLifecycle:
         assert executed["settlement_ref"] == "payment_..."
         assert executed["amount_sat"] == 2100
         assert executed["fee_sat"] == 10
+
+        # Bob verifies recipient-side activity and closes the Buzz loop with
+        # a signed receipt.  The receipt is never treated as authorization.
+        published = _send_json(bob, {
+            "command": "verify_publish_receipt",
+            "intent_id": intent.id,
+            "quote_id": quote.quote_id,
+            "settlement_ref": "payment_hash_abc123",
+            "amount_sat": 2100,
+        })
+        assert published["event"] == "verify_publish_receipt"
+        assert published["amount_sat"] == 2100
+        _relay_last_event(bob_exec, alice_exec, author_pubkey=RECIPIENT_PUBKEY)
+        receipt_events = _send_json(alice, {"command": "receive"})["messages"]
+        assert [event["type"] for event in receipt_events] == ["PaymentReceipt"]
 
     def test_approval_command_never_appears_in_buzz(self, tmp_path: Path):
         alice_exec = FakeExecutor()
@@ -360,12 +393,15 @@ class TestHermesRegtestProcessLifecycle:
             "command": "submit_quote_local",
             "quote": quote_dict,
         })
-        prepared = _send_json(alice, {"command": "prepare"})
+        _send_json(alice, {"command": "prepare"})
+        prepared_record = alice._orchestrator._intents[intent.id].prepared
+        assert prepared_record is not None
+        prepared_hash = prepared_record.prepared_hash
         _send_json(alice, {
             "command": "approve",
             "intent_id": intent.id,
             "quote_id": quote.quote_id,
-            "prepared_hash": prepared["prepared_hash"],
+            "prepared_hash": prepared_hash,
         })
 
         for _channel, content in alice_exec.sent:
@@ -417,12 +453,15 @@ class TestHermesRegtestProcessRecovery:
             "command": "accept_quote",
             "message_id": quotes[0]["message_id"],
         })
-        prepared = _send_json(alice, {"command": "prepare"})
+        _send_json(alice, {"command": "prepare"})
+        prepared_record = alice._orchestrator._intents[intent.id].prepared
+        assert prepared_record is not None
+        prepared_hash = prepared_record.prepared_hash
         _send_json(alice, {
             "command": "approve",
             "intent_id": intent.id,
             "quote_id": quote.quote_id,
-            "prepared_hash": prepared["prepared_hash"],
+            "prepared_hash": prepared_hash,
         })
         with pytest.raises(StateError, match="RECONCILIATION_REQUIRED"):
             _send_json(alice, {"command": "execute"})
@@ -436,20 +475,14 @@ class TestHermesRegtestProcessRecovery:
         )
         recovered = _send_json(new_alice, {"command": "recover"})
         assert recovered["event"] == "recover"
-        assert recovered["intents"][0]["state"] == "approved"  # recovered state
-        assert recovered["state_count"]["approved"] == 1
+        assert recovered["intents"][0]["state"] == "reconciliation_required"
+        assert recovered["intents"][0]["prepared_hash"] == prepared_hash[:8] + "..."
+        assert recovered["state_count"]["reconciliation_required"] == 1
 
         # A second execute on the restarted process must not auto-retry and
-        # fails because the adapter payload is not reconstituted after crash.
-        with pytest.raises(StateError, match="cannot execute: no prepared payload"):
+        # fails because the state is fail-closed after the ambiguous dispatch.
+        with pytest.raises(StateError, match="no intent in state APPROVED"):
             _send_json(new_alice, {"command": "execute"})
-
-        # After restart the intent is APPROVED. Re-preparing is not allowed
-        # without re-quotes. Alice can only settle via a receipt from Bob
-        # once the adapter has declared ambiguity. We therefore demonstrate
-        # reconciliation by moving the intent back to RECONCILIATION_REQUIRED
-        # through a second execute attempt (which again raises AmbiguousResult),
-        # but only after Bob has verified and published a receipt.
 
         # Bob publishes a receipt; new Alice accepts it and settles
         receipt = make_receipt(
@@ -467,14 +500,13 @@ class TestHermesRegtestProcessRecovery:
         _relay_last_event(bob_exec, new_alice_exec, author_pubkey=RECIPIENT_PUBKEY)
 
         received = _send_json(new_alice, {"command": "receive"})
-        with pytest.raises(StateError, match="cannot receive receipt in state APPROVED"):
-            _send_json(new_alice, {
-                "command": "accept_receipt",
-                "message_id": received["messages"][0]["message_id"],
-            })
+        accepted = _send_json(new_alice, {
+            "command": "accept_receipt",
+            "message_id": received["messages"][0]["message_id"],
+        })
+        assert accepted["state"] == "settled"
 
         # The recovery test demonstrates the durable state survives restart,
-        # the intent remains APPROVED, and receipts are gated by the state
-        # machine — no automatic reconciliation occurred.
+        # the intent is settled only after the verified Bob receipt arrives.
         status = _send_json(new_alice, {"command": "status"})
-        assert status["state_count"]["approved"] == 1
+        assert status["state_count"]["settled"] == 1

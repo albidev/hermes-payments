@@ -1,6 +1,6 @@
 """Two-process P6 runner primitives.
 
-The process boundary is deliberately small: it validates explicit regtest
+The process boundary is deliberately small: it validates explicit test-network
 configuration, carries machine-readable operator commands, and delegates all
 payment policy to the injected ``PaymentOrchestrator``.  Payment messages
 travel only through the injected ``PeerTransport`` (Buzz in production,
@@ -8,6 +8,7 @@ InMemoryPeerTransport in deterministic tests).
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import tempfile
@@ -16,6 +17,7 @@ from typing import Any, ClassVar, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
+from hermes_payments.adapter import PrepareResult
 from hermes_payments.models import (
     AgentIdentity,
     PaymentApproval,
@@ -23,6 +25,7 @@ from hermes_payments.models import (
     PaymentMessage,
     PaymentQuote,
     PaymentReceipt,
+    Rail,
     compute_id,
 )
 from hermes_payments.peer import HermesPeer
@@ -58,9 +61,9 @@ class ProcessConfig(BaseModel):
 
     @field_validator("network")
     @classmethod
-    def _regtest_only(cls, value: str) -> str:
-        if value != "regtest":
-            raise ValueError("P6 process runner is regtest-only")
+    def _supported_test_network(cls, value: str) -> str:
+        if value not in {"regtest", "signet"}:
+            raise ValueError("P6 process runner supports regtest or signet only")
         return value
 
     @field_validator("channel")
@@ -99,6 +102,7 @@ class JsonlCommand:
         "approve",
         "execute",
         "publish_receipt",
+        "verify_publish_receipt",
         "accept_receipt",
         "recover",
         "submit_quote_local",
@@ -252,6 +256,7 @@ class HermesRegtestProcess:
     ) -> None:
         self.config = config
         self._clock = clock or (lambda: 0)
+        self._adapter = adapter
         self._orchestrator = PaymentOrchestrator(
             adapter=adapter,
             store_path=str(config.store_path) if config.store_path else None,
@@ -264,6 +269,7 @@ class HermesRegtestProcess:
             orchestrator=self._orchestrator,
         )
         self._inbox: list[PeerMessage] = []
+        self._inbox_ids: set[str] = set()
         self._state_store = ProcessStateStore(
             config.state_root / "process_state.json"
         )
@@ -278,10 +284,17 @@ class HermesRegtestProcess:
         handler = getattr(self, f"_handle_{command.name}", None)
         if handler is None:
             raise ProcessProtocolError(f"command not implemented: {command.name}")
-        result = handler(command.arguments)
-        if not isinstance(result, dict):
-            raise ProcessProtocolError(f"{command.name} handler must return an object")
-        self._snapshot_state()
+        # Persist in a finally block.  In particular, execute() moves the
+        # intent to EXECUTING before the adapter call; if that call is
+        # ambiguous and raises, the safe state must still survive a restart.
+        try:
+            result = handler(command.arguments)
+            if not isinstance(result, dict):
+                raise ProcessProtocolError(
+                    f"{command.name} handler must return an object"
+                )
+        finally:
+            self._snapshot_state()
         return json.dumps(
             {"event": command.name, **result},
             sort_keys=True,
@@ -305,8 +318,14 @@ class HermesRegtestProcess:
         limit = args.get("limit")
         if limit is not None:
             limit = int(limit)
-        messages = self._peer.receive(limit=limit)
-        self._inbox.extend(messages)
+        received = self._peer.receive(limit=limit)
+        messages = []
+        for message in received:
+            if message.message_id in self._inbox_ids:
+                continue
+            self._inbox_ids.add(message.message_id)
+            self._inbox.append(message)
+            messages.append(message)
         return {
             "messages": [
                 {
@@ -376,18 +395,29 @@ class HermesRegtestProcess:
         prepared = self._orchestrator.prepare()
         return {
             "fee_sat": prepared.fee_sat,
-            "prepared_hash": prepared.prepared_hash,
+            "prepared_hash": redacted_identifier(prepared.prepared_hash),
             "rail": prepared.rail.value,
         }
 
     def _handle_approve(self, args: dict[str, Any]) -> dict[str, Any]:
         if self.config.approver is None:
             raise ProcessProtocolError("approver identity is not configured")
+        intent_id = args["intent_id"]
+        prepared_hash = args["prepared_hash"]
+        # JSONL output is deliberately display-safe.  Resolve the returned
+        # prefix only against the prepared record for the explicitly named
+        # intent; the full binding remains inside this process and is still
+        # what PaymentOrchestrator.approve() validates.
+        record = self._orchestrator._intents.get(intent_id)
+        if record is not None and record.prepared is not None:
+            full_hash = record.prepared.prepared_hash
+            if prepared_hash == redacted_identifier(full_hash):
+                prepared_hash = full_hash
         approval = PaymentApproval(
             id="placeholder",
-            intent_id=args["intent_id"],
+            intent_id=intent_id,
             quote_id=args["quote_id"],
-            prepared_hash=args["prepared_hash"],
+            prepared_hash=prepared_hash,
             approver=self.config.approver,
             created_at=self._clock(),
         )
@@ -418,6 +448,57 @@ class HermesRegtestProcess:
             "intent_id": redacted_identifier(receipt.intent_id),
         }
 
+    def _handle_verify_publish_receipt(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Verify recipient-side activity, then publish a local receipt.
+
+        The settlement reference is supplied by the local operator after the
+        recipient wallet has been inspected.  It is never copied into the
+        JSONL response in full, and it is never accepted as payment
+        authorization by itself.
+        """
+        intent_id = args["intent_id"]
+        quote_id = args["quote_id"]
+        settlement_ref = args["settlement_ref"]
+        intent = self._orchestrator.get_intent(intent_id)
+        if intent is None:
+            raise ProcessProtocolError(f"unknown intent {redacted_identifier(intent_id)}")
+
+        amount_sat = int(args.get("amount_sat", intent.amount_sat))
+        if amount_sat != intent.amount_sat:
+            raise ProcessProtocolError("receipt amount does not match the intent")
+
+        verification = self._adapter.verify_receipt(
+            settlement_ref=settlement_ref,
+            expected_amount_sat=amount_sat,
+        )
+        if not verification.verified:
+            detail = verification.error or "recipient activity could not be verified"
+            raise ProcessProtocolError(detail)
+        if verification.settlement_ref != settlement_ref:
+            raise ProcessProtocolError("receipt verification reference mismatch")
+
+        receipt = PaymentReceipt(
+            id="placeholder",
+            intent_id=intent_id,
+            quote_id=quote_id,
+            recipient=self.config.identity,
+            settlement_ref=settlement_ref,
+            amount_sat=verification.amount_sat,
+            fee_sat=verification.fee_sat,
+            rail=self._adapter.rail,
+            settled_at=self._clock(),
+            created_at=self._clock(),
+        )
+        receipt.id = compute_id(receipt)
+        message_id = self._peer.publish_receipt(receipt)
+        return {
+            "receipt_id": redacted_identifier(receipt.id),
+            "message_id": redacted_identifier(message_id),
+            "intent_id": redacted_identifier(receipt.intent_id),
+            "amount_sat": receipt.amount_sat,
+            "fee_sat": receipt.fee_sat,
+        }
+
     def _handle_accept_receipt(self, args: dict[str, Any]) -> dict[str, Any]:
         redacted_id = args["message_id"]
         msg = self._find_inbox_message(redacted_id)
@@ -436,6 +517,11 @@ class HermesRegtestProcess:
                 {
                     "intent_id": redacted_identifier(rec.intent.id),
                     "state": rec.state.value,
+                    "prepared_hash": (
+                        redacted_identifier(rec.prepared.prepared_hash)
+                        if rec.prepared is not None
+                        else None
+                    ),
                 }
                 for rec in self._orchestrator._intents.values()
             ],
@@ -453,9 +539,11 @@ class HermesRegtestProcess:
         raise ProcessProtocolError(f"message {redacted_id} not found in inbox")
 
     def _snapshot_state(self) -> None:
-        snapshot: dict[str, Any] = {}
+        records: dict[str, Any] = {}
         for intent_id, rec in self._orchestrator._intents.items():
-            snapshot[intent_id] = {
+            prepared = rec.prepared
+            approval = rec.approval
+            records[intent_id] = {
                 "state": rec.state.value,
                 "intent": (
                     rec.intent.model_dump(exclude_none=True, mode="python")
@@ -465,34 +553,128 @@ class HermesRegtestProcess:
                     rec.quote.model_dump(exclude_none=True, mode="python")
                     if rec.quote else None
                 ),
-                "prepared_hash": (
-                    rec.prepared.prepared_hash if rec.prepared else None
+                "prepared": (
+                    {
+                        "fee_sat": prepared.fee_sat,
+                        "prepared_hash": prepared.prepared_hash,
+                        "rail": prepared.rail.value,
+                        "prepared_payload": base64.b64encode(
+                            prepared.prepared_payload
+                        ).decode("ascii"),
+                    }
+                    if prepared else None
                 ),
-                "approval_id": rec.approval.id if rec.approval else None,
+                "approval": (
+                    approval.model_dump(exclude_none=True, mode="python")
+                    if approval else None
+                ),
                 "receipt": (
                     rec.receipt.model_dump(exclude_none=True, mode="python")
                     if rec.receipt else None
                 ),
             }
-        self._state_store.save(snapshot)
+
+        inbox = []
+        for peer_message in self._inbox:
+            inbox.append(
+                {
+                    "message_id": peer_message.message_id,
+                    "type": peer_message.message.__class__.__name__,
+                    "message": peer_message.message.model_dump(
+                        exclude_none=True,
+                        mode="python",
+                    ),
+                    "author": peer_message.author.model_dump(
+                        exclude_none=True,
+                        mode="python",
+                    ),
+                    "published_at": peer_message.published_at,
+                }
+            )
+
+        self._state_store.save(
+            {
+                "version": 2,
+                "records": records,
+                "inbox": inbox,
+            }
+        )
 
     def _maybe_recover(self) -> None:
         snapshot = self._state_store.load()
+        records = snapshot.get("records", snapshot)
+        if not isinstance(records, dict):
+            raise ProcessProtocolError("process state snapshot has invalid records")
+
         from hermes_payments.policy import IntentRecord
-        for intent_id, data in snapshot.items():
+
+        for intent_id, data in records.items():
+            if not isinstance(data, dict) or not data.get("intent"):
+                continue
             record = IntentRecord(
                 intent=PaymentIntent.model_validate(data["intent"]),
                 state=PaymentState(data["state"]),
+                expires_at=int(data["intent"].get("expires_at", 0)),
             )
             if data.get("quote"):
                 record.quote = PaymentQuote.model_validate(data["quote"])
-            if data.get("prepared_hash"):
-                # Prepared payload is adapter-specific and not persisted; the
-                # hash is enough to prove an approval already happened.
-                record.prepared = None
+                record.quote_expires_at = record.quote.expires_at
+            if data.get("prepared"):
+                prepared = data["prepared"]
+                try:
+                    payload = base64.b64decode(
+                        prepared["prepared_payload"],
+                        validate=True,
+                    )
+                    record.prepared = PrepareResult(
+                        fee_sat=int(prepared["fee_sat"]),
+                        prepared_hash=prepared["prepared_hash"],
+                        rail=Rail(prepared["rail"]),
+                        prepared_payload=payload,
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ProcessProtocolError(
+                        f"invalid prepared state for {redacted_identifier(intent_id)}"
+                    ) from exc
+            if data.get("approval"):
+                record.approval = PaymentApproval.model_validate(data["approval"])
             if data.get("receipt"):
                 record.receipt = PaymentReceipt.model_validate(data["receipt"])
+
+            # A crash after the process entered EXECUTING but before the
+            # adapter returned is indistinguishable from an ambiguous
+            # dispatch.  Recovery must never make that state executable again.
+            if record.state == PaymentState.EXECUTING:
+                record.state = PaymentState.RECONCILIATION_REQUIRED
+                self._orchestrator._audit.append(
+                    "recovered_executing",
+                    intent_id=intent_id,
+                    state=record.state.value,
+                )
             self._orchestrator._intents[intent_id] = record
+
+        raw_inbox = snapshot.get("inbox", []) if isinstance(snapshot, dict) else []
+        message_types = {
+            "PaymentIntent": PaymentIntent,
+            "PaymentQuote": PaymentQuote,
+            "PaymentReceipt": PaymentReceipt,
+        }
+        if isinstance(raw_inbox, list):
+            for item in raw_inbox:
+                try:
+                    message_type = message_types[item["type"]]
+                    message = message_type.model_validate(item["message"])
+                    peer_message = PeerMessage(
+                        message_id=item["message_id"],
+                        message=message,
+                        author=AgentIdentity.model_validate(item["author"]),
+                        published_at=int(item["published_at"]),
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ProcessProtocolError("invalid process inbox snapshot") from exc
+                if peer_message.message_id not in self._inbox_ids:
+                    self._inbox_ids.add(peer_message.message_id)
+                    self._inbox.append(peer_message)
 
 
 __all__ = [
