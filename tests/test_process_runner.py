@@ -18,7 +18,7 @@ from examples.two_hermes_regtest.process import (
     ProcessProtocolError,
     redacted_identifier,
 )
-from hermes_payments.adapter import AmbiguousResult
+from hermes_payments.adapter import AmbiguousResult, ReconcileResult
 from hermes_payments.policy import StateError
 from hermes_payments.transport import BuzzTransport, FakeExecutor
 from tests.fixtures import (
@@ -69,11 +69,15 @@ def _make_process(
     executor: FakeExecutor,
     *,
     execute_raises: Exception | None = None,
+    reconcile_result: ReconcileResult | None = None,
+    reconcile_results: list[ReconcileResult] | None = None,
 ) -> HermesRegtestProcess:
     adapter = StubAdapter(
         fee_sat=10,
         settlement_ref="payment_hash_abc123",
         execute_raises=execute_raises,
+        reconcile_result=reconcile_result,
+        reconcile_results=reconcile_results,
     )
     transport = BuzzTransport(
         executor=executor,
@@ -472,12 +476,40 @@ class TestHermesRegtestProcessRecovery:
             config,
             new_alice_exec,
             execute_raises=AmbiguousResult("timeout after dispatch"),
+            reconcile_results=[
+                ReconcileResult(
+                    status="PENDING",
+                    settlement_ref="payment_hash_abc123",
+                    amount_sat=2100,
+                    fee_sat=10,
+                ),
+                ReconcileResult(
+                    status="PENDING",
+                    settlement_ref="payment_hash_abc123",
+                    amount_sat=2100,
+                    fee_sat=10,
+                ),
+                ReconcileResult(
+                    status="COMPLETE",
+                    settlement_ref="payment_hash_abc123",
+                    amount_sat=2100,
+                    fee_sat=10,
+                    verified=True,
+                ),
+            ],
         )
-        recovered = _send_json(new_alice, {"command": "recover"})
+        recovered = _send_json(new_alice, {
+            "command": "recover",
+            "max_wait_seconds": 0.2,
+            "poll_interval_seconds": 0.01,
+        })
         assert recovered["event"] == "recover"
         assert recovered["intents"][0]["state"] == "reconciliation_required"
         assert recovered["intents"][0]["prepared_hash"] == prepared_hash[:8] + "..."
+        assert recovered["intents"][0]["reconciliation"]["status"] == "COMPLETE"
+        assert recovered["intents"][0]["reconciliation"]["settlement_ref"] == "payment_..."
         assert recovered["state_count"]["reconciliation_required"] == 1
+        assert new_alice._adapter.execute_call_count == 0
 
         # A second execute on the restarted process must not auto-retry and
         # fails because the state is fail-closed after the ambiguous dispatch.

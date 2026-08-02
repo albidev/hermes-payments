@@ -10,7 +10,7 @@ The project separates deterministic correctness from live operational correctnes
 
 ### Policy core
 
-`tests/test_policy_core.py` covers expiry and allowlists, durable idempotency, audit sequencing, fee constraints, execution transitions, ambiguous results, receipt replay, and mismatch behavior.
+`tests/test_policy_core.py` covers expiry and allowlists, durable idempotency, audit sequencing, fee constraints, execution transitions, ambiguous results, read-only reconciliation, bounded polling, receipt replay, and mismatch behavior.
 
 ### Transport-neutral peer boundary
 
@@ -28,12 +28,15 @@ The project separates deterministic correctness from live operational correctnes
 unsupported-network rejection, injection-safe command lists, raw `PrepareSend`
 and `Send`, exact prepared intent binding, fee/amount/expiry/payment-hash
 validation, strict status parsing, recipient-side `activity --kind recv`,
-sender-side `activity --kind send`, both `activity.entries` and top-level
-`recent` JSON envelopes, redaction, and ambiguous outcomes.
+sender-side `activity --kind send`, read-only settlement reconciliation,
+`COMPLETE`/`PENDING`/`UNKNOWN` recovery outcomes, both `activity.entries` and
+top-level `recent` JSON envelopes, redaction, and ambiguous outcomes.
 
 ### Two-Hermes composition
 
 `tests/test_hermes_to_hermes_e2e.py` composes two independent `HermesPeer` stacks over `InMemoryTransportHub`, with no Buzz or network dependency. It demonstrates adapter-complete settlement and receipt-mediated reconciliation.
+
+`tests/test_process_runner.py` covers the OS-process JSONL boundary, durable restart recovery, `COMPLETE`/`PENDING` polling, and the invariant that recovery never calls `Send` again.
 
 `tests/test_two_hermes_e2e.py` remains the Buzz-envelope composition proof with separate fake Buzz and Wavelength executors. It demonstrates adapter-complete settlement, receipt-mediated reconciliation settlement, replay protection, and tamper negatives.
 
@@ -75,6 +78,26 @@ Outcome:             PASS
 ```
 
 The raw Wavelength JSON was observed as `{"activity":{"entries":[...]}}`; another formatter exposes a top-level `recent` list. Both forms are now covered by the adapter and regression tests. The internal settlement route was `in_ark`; this agent-to-agent payment therefore has a Wavelength payment/activity reference, not a separate on-chain mempool transaction. Bootstrap funding transactions are distinct evidence and must not be reported as the payment transaction.
+
+### Post-checkpoint deterministic recovery gate
+
+The process boundary now supports a read-only recovery command. After a
+restart, `EXECUTING` is converted to `RECONCILIATION_REQUIRED`; recovery may
+query sender activity and persist the observed status without ever calling
+`Send` again:
+
+```json
+{"target":"alice","command":"recover","max_wait_seconds":720,"poll_interval_seconds":2}
+```
+
+`COMPLETE` records sender-side evidence but still waits for Bob's independently
+verified receipt. `PENDING` is polled only inside the bounded window, while
+`UNKNOWN` remains fail-closed. The deterministic restart test observed
+`PENDING → PENDING → COMPLETE` and confirmed zero post-restart execute calls.
+The live Signet gate repeated the same boundary with a real supervisor kill:
+recovery observed `COMPLETE` in 8.335 seconds, activity showed exactly one
+matching Alice `send` and one Bob `recv`, and the final receipt-mediated state
+was `settled=1`.
 
 ## Commands
 

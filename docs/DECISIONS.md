@@ -43,7 +43,7 @@ documentation, and tests.
 
 **Status:** Accepted
 
-A timeout or unknown result during execution may mean the daemon accepted the payment. The state machine enters `RECONCILIATION_REQUIRED`; retries are forbidden until a human or verified receipt resolves the outcome.
+A timeout or unknown result during execution may mean the daemon accepted the payment. The state machine enters `RECONCILIATION_REQUIRED`; retries are forbidden. A read-only adapter reconciliation query may record `COMPLETE`, `PENDING`, or `UNKNOWN` sender-side evidence, but even `COMPLETE` does not bypass the recipient's independently verified receipt.
 
 ## ADR-008 — Distinguish bootstrap funding from settlement
 
@@ -62,3 +62,9 @@ Wavelength can internally choose an Ark route for a Lightning invoice. The curre
 **Status:** Accepted
 
 The Hermes-to-Hermes application flow depends on `PeerTransport`, not on Buzz commands or NIP-29 event details. `PeerMessage` carries the typed payment message plus transport ID, author, and publication timestamp. Buzz is the first concrete adapter and remains fully validated at its boundary; a future HTTP, WebSocket, Unix-socket, or other adapter can replace it without changing policy or peer orchestration. An in-memory transport proves the composition without pretending to be a live relay.
+
+## ADR-011 — Bound automatic reconciliation polling
+
+**Status:** Accepted
+
+Recovery may poll a matching sender-side `PENDING` activity entry only inside an explicit bounded window, capped at 12 minutes. The default recovery command performs one read-only query and does not block process startup. When the window expires, or when the evidence is absent or contradictory, the intent remains `RECONCILIATION_REQUIRED`; the adapter is never allowed to dispatch a second send.

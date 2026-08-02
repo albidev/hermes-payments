@@ -101,6 +101,23 @@ class ReceiptVerifyResult:
     error: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class ReconcileResult:
+    """Read-only result of recovering an interrupted settlement dispatch.
+
+    ``status`` is one of ``COMPLETE``, ``PENDING``, or ``UNKNOWN``.  Only
+    ``COMPLETE`` with a matching settlement reference and amount is evidence
+    that can advance recovery; all other outcomes remain fail-closed.
+    """
+    status: str
+    settlement_ref: str = ""
+    amount_sat: int = 0
+    fee_sat: int = 0
+    rail: Optional[Rail] = None
+    verified: bool = False
+    error: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Abstract adapter interface
 # ---------------------------------------------------------------------------
@@ -178,6 +195,23 @@ class SettlementAdapter(ABC):
         method with a sender-side activity query.
         """
         return self.verify_receipt(settlement_ref, expected_amount_sat)
+
+    def reconcile_settlement(
+        self,
+        prepared_payload: bytes,
+        prepared_hash: str,
+        expected_amount_sat: int,
+    ) -> ReconcileResult:
+        """Inspect a previously dispatched settlement without retrying it.
+
+        Adapters that cannot correlate a prepared payload with local rail
+        activity must return ``UNKNOWN``.  This default intentionally keeps
+        recovery fail-closed for future adapters.
+        """
+        return ReconcileResult(
+            status="UNKNOWN",
+            error="adapter does not support settlement reconciliation",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -645,6 +679,35 @@ def _extract_payment_hash(entry: Dict[str, Any]) -> str:
     return ""
 
 
+def _activity_entries(data: Any) -> List[Dict[str, Any]]:
+    """Extract activity entries from the envelopes emitted by wavecli.
+
+    Wavelength versions in the field have returned a bare list, a top-level
+    ``entries``/``items``/``recent`` collection, and an ``activity`` wrapper.
+    Recovery and receipt verification must inspect the same normalized view.
+    """
+    if isinstance(data, list):
+        return [entry for entry in data if isinstance(entry, dict)]
+    if not isinstance(data, dict):
+        return []
+
+    activity = data.get("activity")
+    if isinstance(activity, dict):
+        data = activity
+
+    candidate = data.get(
+        "entries",
+        data.get("items", data.get("recent", [])),
+    )
+    if not candidate and isinstance(data.get("entry"), dict):
+        candidate = [data["entry"]]
+    if isinstance(candidate, dict):
+        candidate = [candidate]
+    if not isinstance(candidate, list):
+        return []
+    return [entry for entry in candidate if isinstance(entry, dict)]
+
+
 # ---------------------------------------------------------------------------
 # Wavelength adapter (concrete, v2 — P4 RAW RPC PATH)
 # ---------------------------------------------------------------------------
@@ -945,6 +1008,137 @@ class WavelengthAdapter(SettlementAdapter):
             rail=Rail.LIGHTNING,
         )
 
+    def reconcile_settlement(
+        self,
+        prepared_payload: bytes,
+        prepared_hash: str,
+        expected_amount_sat: int,
+    ) -> ReconcileResult:
+        """Inspect sender activity after a crash or ambiguous Send outcome.
+
+        This method is deliberately read-only: it can query activity but it
+        never calls PrepareSend or Send.  A matching PENDING entry remains
+        pending; only a matching COMPLETE entry is positive evidence.
+        """
+        if compute_prepared_hash(prepared_payload) != prepared_hash:
+            return ReconcileResult(
+                status="UNKNOWN",
+                error="prepared payload does not match prepared_hash",
+            )
+
+        try:
+            payload = json.loads(prepared_payload.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            return ReconcileResult(
+                status="UNKNOWN",
+                error=f"cannot decode prepared payload: {redact_sensitive(str(exc))}",
+            )
+        if not isinstance(payload, dict):
+            return ReconcileResult(
+                status="UNKNOWN",
+                error="prepared payload is not a JSON object",
+            )
+
+        payment_hash = payload.get("payment_hash", "")
+        amount_sat = payload.get("amount_sat", 0)
+        if not isinstance(payment_hash, str) or not payment_hash:
+            return ReconcileResult(
+                status="UNKNOWN",
+                error="prepared payload has no payment_hash",
+            )
+        try:
+            amount_sat = int(amount_sat)
+        except (TypeError, ValueError):
+            return ReconcileResult(
+                status="UNKNOWN",
+                settlement_ref=payment_hash,
+                error="prepared payload has invalid amount_sat",
+            )
+        if amount_sat != expected_amount_sat:
+            return ReconcileResult(
+                status="UNKNOWN",
+                settlement_ref=payment_hash,
+                error="prepared amount does not match the intent",
+            )
+
+        cmd = _build_wavecli_activity_cmd(
+            kind="send",
+            rpc_server=self._rpc_server,
+            network=self._network,
+            no_tls=self._no_tls,
+            no_macaroons=self._no_macaroons,
+            json_output=True,
+        )
+        try:
+            data = self._executor.run(cmd)
+        except AdapterError as exc:
+            return ReconcileResult(
+                status="UNKNOWN",
+                settlement_ref=payment_hash,
+                error=f"cannot query sender activity: {redact_sensitive(str(exc))}",
+            )
+        except Exception as exc:
+            return ReconcileResult(
+                status="UNKNOWN",
+                settlement_ref=payment_hash,
+                error=f"sender activity query failed: {redact_sensitive(str(exc))}",
+            )
+
+        for entry in _activity_entries(data):
+            try:
+                parsed = _parse_activity_entry(entry)
+            except AdapterError:
+                continue
+            if parsed["payment_hash"] != payment_hash:
+                continue
+
+            observed_amount = abs(parsed["amount_sat"])
+            if observed_amount != expected_amount_sat:
+                return ReconcileResult(
+                    status="UNKNOWN",
+                    settlement_ref=payment_hash,
+                    amount_sat=observed_amount,
+                    fee_sat=parsed["fee_sat"],
+                    error=(
+                        f"activity amount mismatch: expected {expected_amount_sat}, "
+                        f"got {observed_amount}"
+                    ),
+                )
+
+            status = parsed["status"]
+            if status == "COMPLETE":
+                return ReconcileResult(
+                    status="COMPLETE",
+                    settlement_ref=payment_hash,
+                    amount_sat=observed_amount,
+                    fee_sat=parsed["fee_sat"],
+                    rail=Rail.LIGHTNING,
+                    verified=True,
+                )
+            if status == "PENDING":
+                return ReconcileResult(
+                    status="PENDING",
+                    settlement_ref=payment_hash,
+                    amount_sat=observed_amount,
+                    fee_sat=parsed["fee_sat"],
+                    rail=Rail.LIGHTNING,
+                    error="matching sender activity is still PENDING",
+                )
+            return ReconcileResult(
+                status="UNKNOWN",
+                settlement_ref=payment_hash,
+                amount_sat=observed_amount,
+                fee_sat=parsed["fee_sat"],
+                rail=Rail.LIGHTNING,
+                error=f"matching sender activity has status {status}",
+            )
+
+        return ReconcileResult(
+            status="UNKNOWN",
+            settlement_ref=payment_hash,
+            error="no matching sender activity entry found",
+        )
+
     def verify_receipt(
         self,
         settlement_ref: str,
@@ -1005,23 +1199,7 @@ class WavelengthAdapter(SettlementAdapter):
                 error=f"activity query failed: {redact_sensitive(str(e))}",
             )
 
-        entries: List[Dict[str, Any]] = []
-        if isinstance(data, list):
-            entries = [entry for entry in data if isinstance(entry, dict)]
-        elif isinstance(data, dict):
-            activity = data.get("activity")
-            if isinstance(activity, dict):
-                data = activity
-            candidate = data.get(
-                "entries",
-                data.get("items", data.get("recent", [])),
-            )
-            if not candidate and "entry" in data:
-                candidate = [data["entry"]]
-            if isinstance(candidate, list):
-                entries = [entry for entry in candidate if isinstance(entry, dict)]
-            elif isinstance(candidate, dict):
-                entries = [candidate]
+        entries = _activity_entries(data)
 
         for entry in entries:
             try:

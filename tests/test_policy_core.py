@@ -21,6 +21,7 @@ from hermes_payments.adapter import (
     PrepareResult,
     RailReceiveInstruction,
     ReceiptVerifyResult,
+    ReconcileResult,
     SettlementAdapter,
 )
 from hermes_payments.models import (
@@ -71,6 +72,8 @@ class StubAdapter(SettlementAdapter):
         execute_result: ExecuteResult | None = None,
         execute_raises: Exception | None = None,
         verify_result: ReceiptVerifyResult | None = None,
+        reconcile_result: ReconcileResult | None = None,
+        reconcile_results: list[ReconcileResult] | None = None,
     ):
         self._fee_sat = fee_sat
         self._prepared_payload = prepared_payload
@@ -78,7 +81,10 @@ class StubAdapter(SettlementAdapter):
         self._execute_result = execute_result
         self._execute_raises = execute_raises
         self._verify_result = verify_result
+        self._reconcile_result = reconcile_result
+        self._reconcile_results = list(reconcile_results or [])
         self.execute_call_count = 0
+        self.reconcile_call_count = 0
         self.last_prepared_hash: str | None = None
 
     @property
@@ -134,13 +140,25 @@ class StubAdapter(SettlementAdapter):
             fee_sat=self._fee_sat,
         )
 
+    def reconcile_settlement(
+        self,
+        prepared_payload: bytes,
+        prepared_hash: str,
+        expected_amount_sat: int,
+    ) -> ReconcileResult:
+        self.reconcile_call_count += 1
+        if self._reconcile_results:
+            return self._reconcile_results.pop(0)
+        return self._reconcile_result or ReconcileResult(status="UNKNOWN")
+
 
 def _new_orchestrator(**kwargs):
     """Build a PaymentOrchestrator with a stub adapter and in-memory stores."""
     adapter = kwargs.pop("adapter", None) or StubAdapter(**{
         k: v for k, v in kwargs.items()
         if k in ("fee_sat", "prepared_payload", "settlement_ref",
-                 "execute_result", "execute_raises", "verify_result")
+                 "execute_result", "execute_raises", "verify_result",
+                 "reconcile_result", "reconcile_results")
     })
     store_path = kwargs.pop("store_path", None)
     audit_path = kwargs.pop("audit_path", None)
@@ -596,6 +614,63 @@ class TestFailClosed:
             orch.execute()
         # execute should have been called exactly once
         assert adapter.execute_call_count == 1
+
+    def test_reconcile_complete_records_evidence_without_settling(self):
+        """A read-only COMPLETE observation never bypasses Bob's receipt."""
+        adapter = StubAdapter(
+            execute_raises=AmbiguousResult("timeout after dispatch"),
+            reconcile_result=ReconcileResult(
+                status="COMPLETE",
+                settlement_ref="payment-hash",
+                amount_sat=2100,
+                fee_sat=0,
+                rail=Rail.LIGHTNING,
+                verified=True,
+            ),
+        )
+        orch = _new_orchestrator(adapter=adapter)
+        intent = make_intent(amount_sat=2100)
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        orch.approve(make_approval(intent, quote, prepared_hash=prep.prepared_hash))
+        with pytest.raises(StateError, match="reconciliation"):
+            orch.execute()
+
+        result = orch.reconcile_settlement(intent.id)
+
+        assert result.status == "COMPLETE"
+        assert orch.state(intent.id) == PaymentState.RECONCILIATION_REQUIRED
+        assert adapter.execute_call_count == 1
+        assert adapter.reconcile_call_count == 1
+
+    def test_reconcile_pending_is_repeatable_and_never_executes(self):
+        """PENDING can be polled again, but recovery cannot dispatch."""
+        adapter = StubAdapter(
+            execute_raises=AmbiguousResult("timeout after dispatch"),
+            reconcile_result=ReconcileResult(
+                status="PENDING",
+                settlement_ref="payment-hash",
+                amount_sat=2100,
+                fee_sat=0,
+                rail=Rail.LIGHTNING,
+            ),
+        )
+        orch = _new_orchestrator(adapter=adapter)
+        intent = make_intent(amount_sat=2100)
+        orch.submit(intent)
+        quote = make_quote(intent)
+        orch.receive_quote(quote)
+        prep = orch.prepare()
+        orch.approve(make_approval(intent, quote, prepared_hash=prep.prepared_hash))
+        with pytest.raises(StateError):
+            orch.execute()
+
+        assert orch.reconcile_settlement(intent.id).status == "PENDING"
+        assert orch.reconcile_settlement(intent.id).status == "PENDING"
+        assert adapter.execute_call_count == 1
+        assert adapter.reconcile_call_count == 2
 
     def test_already_settled_rejects_execute(self):
         """Cannot execute on an already-settled intent."""

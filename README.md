@@ -36,12 +36,12 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 | Rail-neutral policy/state core | Implemented | `src/hermes_payments/policy.py`, `state_machine.py` |
 | Peer transport contract | Implemented | `src/hermes_payments/peer_transport.py`, `peer.py` |
 | Buzz transport adapter | Implemented | NIP-29 kind 9, `src/hermes_payments/transport.py` |
-| Wavelength adapter | Implemented for **regtest + explicitly approved Signet** | Raw `PrepareSend`/`Send`, sender-side `activity --kind send`, recipient-side `activity --kind recv` |
+| Wavelength adapter | Implemented for **regtest + explicitly approved Signet** | Raw `PrepareSend`/`Send`, read-only sender-side reconciliation, sender `activity --kind send`, recipient `activity --kind recv` |
 | Live Signet Wavelength settlement | Verified externally | [Settlement evidence](docs/live-signet-payment.md) |
-| Live Buzz + Wavelength Signet vertical | **Verified externally with two Hermes processes**; automatic recovery remains open | [Combined live evidence](docs/live-signet-buzz-vertical.md) |
+| Live Buzz + Wavelength Signet vertical | **Verified externally with two Hermes processes and live crash recovery** | [Combined live evidence](docs/live-signet-buzz-vertical.md) |
 | Live Buzz kind-9 transport | Verified on hosted relay for the latest vertical; local relay smoke evidence retained | [Transport evidence](docs/live-buzz-transport.md) |
 | Two-Hermes transport-neutral proof | Implemented and tested | `tests/test_hermes_to_hermes_e2e.py` |
-| Two deployed Hermes processes + live Signet settlement | **Verified on Signet; manual same-state-root reconciliation verified** | `docs/VERIFICATION.md` |
+| Two deployed Hermes processes + live Signet settlement | **Verified on Signet; automatic crash/restart recovery verified; no second send** | `docs/VERIFICATION.md` |
 | Ark as a first-class protocol rail | Intentionally open | `docs/RAILS.md` |
 
 The repository currently models a Lightning invoice as the receive instruction. Wavelength may select an internal route such as `in_ark` while preparing that invoice; that internal route is not yet exposed as a distinct wire-level `Rail` value. This distinction is documented rather than hidden. See [Rails and settlement semantics](docs/RAILS.md).

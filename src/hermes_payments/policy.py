@@ -34,7 +34,9 @@ from .adapter import (
     AdapterError,
     AmbiguousResult,
     PrepareResult,
+    ReconcileResult,
     SettlementAdapter,
+    redact_sensitive,
 )
 from .models import (
     AgentIdentity,
@@ -237,6 +239,7 @@ class IntentRecord:
     prepared: Optional[PrepareResult] = None
     approval: Optional[PaymentApproval] = None
     receipt: Optional[PaymentReceipt] = None
+    reconciliation: Optional[ReconcileResult] = None
     quote_expires_at: int = 0
     expires_at: int = 0
 
@@ -738,6 +741,48 @@ class PaymentOrchestrator:
             intent_id=rec.intent.id,
             state=rec.state.value,
         )
+
+    def reconcile_settlement(self, intent_id: str) -> ReconcileResult:
+        """Inspect an ambiguous settlement without ever retrying dispatch.
+
+        A ``COMPLETE`` result records sender-side evidence but deliberately
+        leaves the intent in ``RECONCILIATION_REQUIRED`` until the recipient's
+        independently verified receipt arrives.  ``PENDING`` and ``UNKNOWN``
+        are both fail-closed and can be queried again by a bounded supervisor
+        loop.
+        """
+        rec = self._get_record(intent_id)
+        if rec.state != PaymentState.RECONCILIATION_REQUIRED:
+            raise StateError(
+                f"cannot reconcile from state {rec.state.value}; "
+                f"expected RECONCILIATION_REQUIRED"
+            )
+        if rec.prepared is None:
+            raise StateError("cannot reconcile: no prepared payload")
+
+        try:
+            result = self._adapter.reconcile_settlement(
+                prepared_payload=rec.prepared.prepared_payload,
+                prepared_hash=rec.prepared.prepared_hash,
+                expected_amount_sat=rec.intent.amount_sat,
+            )
+        except Exception as exc:
+            # Recovery must never turn an adapter/query failure into a retry.
+            result = ReconcileResult(
+                status="UNKNOWN",
+                error=f"reconciliation query failed: {redact_sensitive(str(exc))}",
+            )
+
+        rec.reconciliation = result
+        self._audit.append(
+            "settlement_reconciled",
+            intent_id=rec.intent.id,
+            status=result.status,
+            amount_sat=result.amount_sat,
+            fee_sat=result.fee_sat,
+            state=rec.state.value,
+        )
+        return result
 
     def cancel(self, intent_id: str) -> None:
         """Cancel an intent from an active state."""

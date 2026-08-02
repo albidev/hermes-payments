@@ -27,6 +27,7 @@ from hermes_payments.adapter import (
     AmbiguousResult,
     FakeWavecliExecutor,
     PrepareResult,
+    ReconcileResult,
     SettlementAdapter,
     WavecliExecutor,
     WavelengthAdapter,
@@ -1025,6 +1026,94 @@ class TestVerifyReceipt:
         )
         assert result.verified is False
         assert result.error is not None and "cannot query activity" in result.error
+
+
+class TestReconcileSettlement:
+    @staticmethod
+    def _prepared_payload(*, payment_hash: str = "aa" * 32) -> bytes:
+        return json.dumps(
+            {
+                "amount_sat": 2100,
+                "fee_sat": 10,
+                "payment_hash": payment_hash,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+
+    def test_reconcile_complete_queries_sender_activity(self):
+        """Recovery observes COMPLETE without dispatching a second Send."""
+        executor = FakeWavecliExecutor()
+        executor.set_response({
+            "activity": {
+                "entries": [{
+                    "status": "ENTRY_STATUS_COMPLETE",
+                    "kind": "ENTRY_KIND_SEND",
+                    "amount_sat": -2100,
+                    "fee_sat": 10,
+                    "progress": {"payment_hash": "aa" * 32},
+                }],
+            },
+        })
+        adapter = _make_adapter(executor=executor)
+        payload = self._prepared_payload()
+
+        result = adapter.reconcile_settlement(
+            prepared_payload=payload,
+            prepared_hash=compute_prepared_hash(payload),
+            expected_amount_sat=2100,
+        )
+
+        assert isinstance(result, ReconcileResult)
+        assert result.status == "COMPLETE"
+        assert result.settlement_ref == "aa" * 32
+        assert result.amount_sat == 2100
+        assert result.fee_sat == 10
+        assert "Send" not in (executor.last_call or [])
+        assert executor.last_call is not None
+        assert executor.last_call[-1] == "send"
+
+    def test_reconcile_pending_remains_fail_closed(self):
+        """A matching PENDING entry is observable but never treated as settled."""
+        executor = FakeWavecliExecutor()
+        executor.set_response({
+            "recent": [{
+                "status": "ENTRY_STATUS_PENDING",
+                "kind": "ENTRY_KIND_SEND",
+                "amount_sat": -2100,
+                "fee_sat": 10,
+                "progress": {"payment_hash": "aa" * 32},
+            }],
+        })
+        adapter = _make_adapter(executor=executor)
+        payload = self._prepared_payload()
+
+        result = adapter.reconcile_settlement(
+            prepared_payload=payload,
+            prepared_hash=compute_prepared_hash(payload),
+            expected_amount_sat=2100,
+        )
+
+        assert result.status == "PENDING"
+        assert result.settlement_ref == "aa" * 32
+        assert result.verified is False
+
+    def test_reconcile_unknown_is_fail_closed(self):
+        """No matching activity leaves the outcome UNKNOWN."""
+        executor = FakeWavecliExecutor()
+        executor.set_response([])
+        adapter = _make_adapter(executor=executor)
+        payload = self._prepared_payload()
+
+        result = adapter.reconcile_settlement(
+            prepared_payload=payload,
+            prepared_hash=compute_prepared_hash(payload),
+            expected_amount_sat=2100,
+        )
+
+        assert result.status == "UNKNOWN"
+        assert result.settlement_ref == "aa" * 32
+        assert result.verified is False
 
 
 # ===========================================================================

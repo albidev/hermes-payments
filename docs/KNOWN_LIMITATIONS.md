@@ -31,3 +31,20 @@ A future multi-payment design should define and test:
 6. audit and reconciliation behavior for interleaved transport messages.
 
 Until those guarantees exist, this repository should be evaluated as a **single-active-flow orchestrator**.
+
+## Live crash/restart recovery is validated only on Signet
+
+The code now implements read-only automatic recovery for an interrupted
+dispatch. On restart it converts `EXECUTING` to
+`RECONCILIATION_REQUIRED`, queries sender activity, and can poll a matching
+`PENDING` entry for a bounded window of at most 12 minutes. It never retries
+`Send`; `COMPLETE` evidence still requires the recipient's verified receipt
+before the intent becomes `SETTLED`.
+
+The deterministic suite covers this behavior, including a simulated
+`PENDING → COMPLETE` sequence and zero post-restart execute calls. The live
+Signet gate also covered a supervisor kill after dispatch, same-state-root
+restart, `COMPLETE` recovery, exactly one matching sender/receiver activity
+pair, and receipt-mediated settlement. This is operational evidence for the
+explicit Signet test setup only; it is not production, mainnet, or custody
+evidence.

@@ -29,6 +29,50 @@ Result:           PASS
 
 The live runner's first activity poll exposed a driver-only parsing gap: the `--json` command returns `{"activity":{"entries": [...]}}`, while another CLI formatter returns a top-level `recent` list. The checked-in adapter and the operator test driver used for the rerun were updated to accept both forms. The payment itself was not retried; reconciliation used the already-dispatched payment and ended with Alice `settled`.
 
+## Post-rerun recovery implementation status
+
+The historical live rerun above predates the automatic recovery implementation.
+The checked-in process boundary now performs the following after a restart;
+the live crash/restart gate below validates it with the real Signet setup:
+
+```text
+EXECUTING
+  → RECONCILIATION_REQUIRED
+  → sender activity query
+  → COMPLETE | PENDING | UNKNOWN
+```
+
+`COMPLETE` is persisted as sender-side evidence and still waits for Bob's
+verified receipt. `PENDING` may be polled through the bounded `recover`
+command, capped at 12 minutes; `UNKNOWN` remains fail-closed. The deterministic
+suite verifies `PENDING → PENDING → COMPLETE` with zero post-restart `Send`
+calls. The live crash/restart gate below verifies the same boundary with real
+Signet daemons and Buzz identities.
+
+## Live crash/restart recovery gate (2026-08-02)
+
+A fresh 2100-sat Bob invoice was used. After Alice completed local prepare and
+approval, the raw dispatch was written to the process boundary and the
+supervisor was hard-killed after Alice's durable snapshot reached
+`RECONCILIATION_REQUIRED`. Both Hermes processes were then restarted with the
+same state roots.
+
+```text
+restart recovery:     COMPLETE after 8.335 seconds
+Alice matching SEND:  1 entry, COMPLETE, -2100 sat, fee 0
+Bob matching RECV:    1 entry, COMPLETE, +2100 sat, fee 0
+second SEND:          none
+Bob receipt:          verified and published over Buzz kind 9
+Alice final state:    settled=1
+Result:               PASS
+```
+
+The activity count was filtered by the fresh payment hash, and the sender and
+receiver references matched. Recovery performed read-only activity queries;
+the restarted process did not call `Send` again. The run used the explicit
+Signet test configuration and does not constitute production or mainnet
+evidence.
+
 ## On-chain verification boundary
 
 The latest Wavelength activity record reports `txid=""`, `confirmation_height=0`, and a virtual `vtxo_outpoint`; the payment/activity reference is not an on-chain Bitcoin transaction. Querying the payment reference and the virtual outpoint against the Mempool Signet API returned HTTP 404, as expected for the internal `in_ark` route.
@@ -157,7 +201,7 @@ The same payment hash, amount, and zero fee were present on both sides. Only aft
 
 - The checked-in Python `WavelengthAdapter` supports Signet only when explicitly
   selected and intentionally rejects mainnet, testnet, and arbitrary networks.
-- Automatic restart recovery is not claimed. The latest test did verify manual reconciliation after the supervisor was stopped and restarted with the same state root.
-- Any mainnet, production, custody, operator-availability, or economic-safety claim.
+- Automatic restart recovery is implemented, deterministically tested, and verified live on Signet. Production, custody, operator-availability, and mainnet claims remain open.
+- Any economic-safety claim beyond the explicit test configuration.
 
 The narrow original Wavelength-only settlement remains documented in [live-signet-payment.md](live-signet-payment.md). The historical local relay transport smoke test remains documented in [live-buzz-transport.md](live-buzz-transport.md). This file is now the authoritative combined Signet two-process evidence; it does not erase the distinction between live evidence and the deterministic offline suite.

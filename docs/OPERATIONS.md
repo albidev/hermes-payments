@@ -68,6 +68,22 @@ wavecli --network regtest --rpcserver localhost:10029 --no-tls --no-macaroons --
 
 The verifier searches for a `COMPLETE` entry with the expected settlement reference and exact amount. Sender-side `send` activity is not sufficient evidence for a recipient receipt.
 
+### Ambiguous dispatch recovery
+
+After a process restart, an interrupted `EXECUTING` intent is recovered as
+`RECONCILIATION_REQUIRED`. The process can query sender-side activity without
+retrying the payment:
+
+```json
+{"target":"alice","command":"recover","max_wait_seconds":720,"poll_interval_seconds":2}
+```
+
+The default `recover` call uses a zero-second wait and performs one query.
+`max_wait_seconds` is capped at 720 seconds; `poll_interval_seconds` must be
+between 0.01 and 60 seconds. `COMPLETE` is recorded as evidence but does not
+settle the intent until Bob's verified `PaymentReceipt` arrives. `PENDING` and
+`UNKNOWN` remain fail-closed. No recovery path calls `Send`.
+
 ## Buzz boundary
 
 The live transport uses the Buzz CLI surface:

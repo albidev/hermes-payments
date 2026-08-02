@@ -12,12 +12,13 @@ import base64
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, ClassVar, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
-from hermes_payments.adapter import PrepareResult
+from hermes_payments.adapter import PrepareResult, ReconcileResult, redact_sensitive
 from hermes_payments.models import (
     AgentIdentity,
     PaymentApproval,
@@ -241,6 +242,21 @@ def _state_count_summary(orchestrator: PaymentOrchestrator) -> dict[str, int]:
     for rec in orchestrator._intents.values():
         counts[rec.state.value] = counts.get(rec.state.value, 0) + 1
     return counts
+
+
+def _serialize_reconciliation(result: Optional[ReconcileResult]) -> Optional[dict[str, Any]]:
+    """Serialize reconciliation evidence without exposing identifiers."""
+    if result is None:
+        return None
+    return {
+        "status": result.status,
+        "settlement_ref": redacted_identifier(result.settlement_ref),
+        "amount_sat": result.amount_sat,
+        "fee_sat": result.fee_sat,
+        "rail": result.rail.value if result.rail is not None else None,
+        "verified": result.verified,
+        "error": redact_sensitive(result.error) if result.error else None,
+    }
 
 
 class HermesRegtestProcess:
@@ -511,8 +527,40 @@ class HermesRegtestProcess:
         }
 
     def _handle_recover(self, _args: dict[str, Any]) -> dict[str, Any]:
-        self._maybe_recover()
+        args = _args
+        try:
+            max_wait_seconds = float(args.get("max_wait_seconds", 0))
+            poll_interval_seconds = float(args.get("poll_interval_seconds", 1))
+        except (TypeError, ValueError) as exc:
+            raise ProcessProtocolError(
+                "recover max_wait_seconds and poll_interval_seconds must be numeric"
+            ) from exc
+        if not 0 <= max_wait_seconds <= 12 * 60:
+            raise ProcessProtocolError("recover max_wait_seconds must be between 0 and 720")
+        if not 0.01 <= poll_interval_seconds <= 60:
+            raise ProcessProtocolError(
+                "recover poll_interval_seconds must be between 0.01 and 60"
+            )
+
+        started = time.monotonic()
+        while True:
+            self._maybe_recover(reconcile=True)
+            pending = [
+                rec
+                for rec in self._orchestrator._intents.values()
+                if (
+                    rec.state == PaymentState.RECONCILIATION_REQUIRED
+                    and rec.reconciliation is not None
+                    and rec.reconciliation.status == "PENDING"
+                )
+            ]
+            elapsed = time.monotonic() - started
+            if not pending or elapsed >= max_wait_seconds:
+                break
+            time.sleep(min(poll_interval_seconds, max_wait_seconds - elapsed))
+
         return {
+            "waited_seconds": round(time.monotonic() - started, 3),
             "intents": [
                 {
                     "intent_id": redacted_identifier(rec.intent.id),
@@ -521,6 +569,9 @@ class HermesRegtestProcess:
                         redacted_identifier(rec.prepared.prepared_hash)
                         if rec.prepared is not None
                         else None
+                    ),
+                    "reconciliation": _serialize_reconciliation(
+                        rec.reconciliation
                     ),
                 }
                 for rec in self._orchestrator._intents.values()
@@ -572,6 +623,22 @@ class HermesRegtestProcess:
                     rec.receipt.model_dump(exclude_none=True, mode="python")
                     if rec.receipt else None
                 ),
+                "reconciliation": (
+                    {
+                        "status": rec.reconciliation.status,
+                        "settlement_ref": rec.reconciliation.settlement_ref,
+                        "amount_sat": rec.reconciliation.amount_sat,
+                        "fee_sat": rec.reconciliation.fee_sat,
+                        "rail": (
+                            rec.reconciliation.rail.value
+                            if rec.reconciliation.rail is not None
+                            else None
+                        ),
+                        "verified": rec.reconciliation.verified,
+                        "error": rec.reconciliation.error,
+                    }
+                    if rec.reconciliation else None
+                ),
             }
 
         inbox = []
@@ -594,13 +661,13 @@ class HermesRegtestProcess:
 
         self._state_store.save(
             {
-                "version": 2,
+                "version": 3,
                 "records": records,
                 "inbox": inbox,
             }
         )
 
-    def _maybe_recover(self) -> None:
+    def _maybe_recover(self, *, reconcile: bool = True) -> None:
         snapshot = self._state_store.load()
         records = snapshot.get("records", snapshot)
         if not isinstance(records, dict):
@@ -640,6 +707,29 @@ class HermesRegtestProcess:
                 record.approval = PaymentApproval.model_validate(data["approval"])
             if data.get("receipt"):
                 record.receipt = PaymentReceipt.model_validate(data["receipt"])
+            if data.get("reconciliation"):
+                reconciliation = data["reconciliation"]
+                try:
+                    record.reconciliation = ReconcileResult(
+                        status=str(reconciliation["status"]),
+                        settlement_ref=str(
+                            reconciliation.get("settlement_ref", "")
+                        ),
+                        amount_sat=int(reconciliation.get("amount_sat", 0)),
+                        fee_sat=int(reconciliation.get("fee_sat", 0)),
+                        rail=(
+                            Rail(reconciliation["rail"])
+                            if reconciliation.get("rail")
+                            else None
+                        ),
+                        verified=bool(reconciliation.get("verified", False)),
+                        error=reconciliation.get("error"),
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise ProcessProtocolError(
+                        f"invalid reconciliation state for "
+                        f"{redacted_identifier(intent_id)}"
+                    ) from exc
 
             # A crash after the process entered EXECUTING but before the
             # adapter returned is indistinguishable from an ambiguous
@@ -652,6 +742,9 @@ class HermesRegtestProcess:
                     state=record.state.value,
                 )
             self._orchestrator._intents[intent_id] = record
+
+            if reconcile and record.state == PaymentState.RECONCILIATION_REQUIRED:
+                self._orchestrator.reconcile_settlement(intent_id)
 
         raw_inbox = snapshot.get("inbox", []) if isinstance(snapshot, dict) else []
         message_types = {
@@ -675,6 +768,9 @@ class HermesRegtestProcess:
                 if peer_message.message_id not in self._inbox_ids:
                     self._inbox_ids.add(peer_message.message_id)
                     self._inbox.append(peer_message)
+
+        if records:
+            self._snapshot_state()
 
 
 __all__ = [
