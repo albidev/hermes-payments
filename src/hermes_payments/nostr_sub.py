@@ -21,9 +21,12 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from .transport import BuzzTransportError, RawBuzzEvent
+
+if TYPE_CHECKING:
+    from websockets.sync.client import ClientConnection
 
 
 def _nsec_to_secret(nsec_or_hex: str) -> bytes:
@@ -104,7 +107,7 @@ class NostrSubscription:
         self._channel = channel
         self._secret = secret
         self._kinds = kinds or [9]
-        self._ws = None
+        self._ws: Optional["ClientConnection"] = None
         self._sub_id = f"hermes-payments-{int(time.time()*1000)}"
 
     def connect(self) -> None:
