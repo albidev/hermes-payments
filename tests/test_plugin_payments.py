@@ -16,11 +16,11 @@ from __future__ import annotations
 import time
 
 import pytest
+from hermes_payments_plugin import ConfigError, PaymentService, redacted
+
 from hermes_payments.adapter import FakeWavecliExecutor, PrepareResult, Rail, ReconcileResult
 from hermes_payments.models import AgentIdentity, PaymentIntent, PaymentQuote, compute_id
 from hermes_payments.peer_transport import InMemoryTransportHub
-from hermes_payments_plugin import ConfigError, PaymentService, redacted
-
 
 ALICE_PK = "c55bd0f67c422e60bf9cd292d6c288795373c519e4b251946277ef0bc474d230"
 BOB_PK = "8ad4f9b40038585c958ddec505bdbbdc5adea57fdac1c55a4ff0470048d25d41"
