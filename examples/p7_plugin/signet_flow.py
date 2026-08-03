@@ -19,7 +19,7 @@ Required env (set these in the shell that runs this script):
     HP_STATE_ROOT           (isolated state dir; default ./p7-state)
     HP_NETWORK=signet
     HP_WAVE_RPC_ALICE, HP_WAVE_RPC_BOB (default localhost:11329 / 11339)
-    HP_TEST_INVOICE         (a real bolt11 invoice from Bob's Wavelength wallet)
+    HP_TEST_INVOICE         (optional; if unset, generated from Bob's Wavelength daemon)
 
 Usage:
     HP_NETWORK=signet ... python examples/p7_plugin/signet_flow.py
@@ -82,6 +82,39 @@ def _poll_until(svc: PaymentService, pred, timeout_s: float = 30.0, label: str =
     raise TimeoutError(f"timed out waiting for {label}")
 
 
+def _make_invoice(amount_sat: int, wave_rpc: str, wavecli: str = "/tmp/wavecli-hermes-testnet") -> str:
+    """Generate a fresh bolt11 invoice from Bob's Wavelength daemon.
+
+    ``wavecli recv`` prints the invoice immediately, then stays pending on the
+    Ark round; we capture the emitted invoice and terminate the process so it
+    never blocks the caller.
+    """
+    import json as _json
+    import subprocess as _subprocess
+
+    cmd = [
+        wavecli, f"--rpcserver={wave_rpc}", "--no-tls", "--no-macaroons",
+        "recv", "--offchain", "--amt", str(amount_sat), "--memo", "p7-test",
+    ]
+    try:
+        proc = _subprocess.Popen(
+            cmd, stdout=_subprocess.PIPE, stderr=_subprocess.PIPE, text=True
+        )
+        try:
+            out, _err = proc.communicate(timeout=15)
+        except _subprocess.TimeoutExpired:
+            proc.kill()
+            out, _err = proc.communicate()
+    except Exception as exc:
+        print(f"wavecli recv failed: {exc}", file=sys.stderr)
+        return ""
+    try:
+        data = _json.loads(out)
+        return data.get("invoice", "")
+    except Exception:
+        return ""
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent
     repo_root = root.parents[1]
@@ -130,12 +163,20 @@ def main() -> int:
     ), label="intent")
     print(f"[bob]   intent received (inbox={len(bob._inbox)})")
 
-    # Bob's quote must carry a real bolt11 invoice. The plugin never mints an
-    # invoice; the operator supplies one from Bob's Wavelength wallet via env.
+    # Bob's quote must carry a real bolt11 invoice. Prefer an operator-supplied
+    # one via HP_TEST_INVOICE; otherwise generate a fresh one from Bob's
+    # Wavelength daemon with a bounded subprocess (the recv call stays pending
+    # on the Ark round, so capture the invoice then terminate it).
     invoice = os.environ.get("HP_TEST_INVOICE", "")
+    if not invoice.startswith("ln"):
+        invoice = _make_invoice(amount, wave_bob)
+        if not invoice:
+            print("could not generate a Bob invoice (set HP_TEST_INVOICE or check wavecli)", file=sys.stderr)
+            return 3
     if not invoice.startswith("ln"):
         print("HP_TEST_INVOICE (a real bolt11 from Bob's wallet) is required", file=sys.stderr)
         return 3
+    print("[bob]   invoice generated (bolt11, not shown)")
     quote = bob.accept_and_quote(intent_id=intent_id, invoice=invoice)
     print(f"[bob]   quote published: {quote['state']} q={quote['quote_id']}")
 
