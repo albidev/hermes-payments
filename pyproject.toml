@@ -11,16 +11,19 @@ license = "MIT"
 license-files = ["LICENSE"]
 dependencies = [
     "pydantic>=2.0,<3.0",
-    "websockets>=12.0,<16.0",
-    "secp256k1>=0.14,<1.0",
-    "bech32>=1.2,<2.0",
 ]
 
 [project.optional-dependencies]
+native-nostr = [
+    "websockets>=12.0,<16.0",
+    "secp256k1>=0.14,<1.0",
+]
 dev = [
     "mypy>=1.15,<2.0",
     "pytest>=7.0,<9.0",
     "ruff>=0.14,<0.15",
+    "websockets>=12.0,<16.0",
+    "secp256k1>=0.14,<1.0",
 ]
 
 [tool.ruff]

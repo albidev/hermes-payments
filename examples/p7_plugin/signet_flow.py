@@ -5,7 +5,7 @@ Buzz hosted relay and the real Wavelength daemons on Signet, then drives the
 full flow through the same functions the plugin tools expose:
 
     alice.pay -> bob.poll -> bob.accept_and_quote -> alice.poll
-             -> alice.prepare -> alice.execute(approve=True) -> settled
+             -> alice.prepare -> alice.execute() -> local human approval -> settled
 
 The flow requires the Alice/Bob private keys via environment variables, exactly
 like the P6 runner. Keys are never stored or transmitted — they are read from
@@ -39,8 +39,6 @@ _REPO_ROOT = Path(__file__).resolve().parent.parents[1]
 for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "src")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
-
-from hermes_payments.models import AgentIdentity
 
 # The plugin dir has a hyphen (required by Hermes discovery) so it is not a
 # valid Python module name — load it under an alias.
@@ -201,15 +199,12 @@ def main() -> int:
     print(f"[alice] prepared: fee={prep['fee_sat']} state={prep['state']}")
     full_hash = prep["full_prepared_hash"]
 
-    # 5. Execute WITHOUT approval must fail closed
-    no_approve = alice.execute(intent_id=intent_id, prepared_hash=full_hash, approve=False)
-    print(f"[alice] execute w/o approval: {no_approve.get('error','OK')}")
+    # 5. hp_execute requests a real local one-shot approval. This script is
+    # intentionally not able to approve itself.
+    exec_res = alice.execute(intent_id=intent_id, prepared_hash=full_hash)
+    print(f"[alice] execute: {exec_res.get('error', exec_res.get('state'))}")
 
-    # 6. Approve + execute -> settled
-    exec_res = alice.execute(intent_id=intent_id, prepared_hash=full_hash, approve=True)
-    print(f"[alice] executed: state={exec_res['state']} ref={exec_res['settlement_ref']}")
-
-    # 7. Final status
+    # 6. Final status
     print("[alice] status:", json.dumps(alice.status(), indent=2))
     return 0 if exec_res.get("state") == "settled" else 2
 

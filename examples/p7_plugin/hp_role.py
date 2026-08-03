@@ -21,7 +21,7 @@ Commands on stdin (one per line):
     {"cmd":"poll"}
     {"cmd":"accept_quote","intent_id":"<full id>","invoice":"<bolt11>"}
     {"cmd":"prepare","quote_id":"<full quote_id>"}
-    {"cmd":"execute","intent_id":"<full id>","prepared_hash":"<full hash>","approve":true}
+    {"cmd":"execute","intent_id":"<full id>","prepared_hash":"<full hash>"}
     {"cmd":"status"}
 
 The full identifiers are exchanged via JSONL (never redacted) because the two
@@ -33,6 +33,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # file is at examples/p7_plugin/, parents[2]=hermes-payments
@@ -55,6 +56,42 @@ def _require_env(name: str) -> str:
         sys.stderr.write(f"missing {name}\n")
         sys.exit(2)
     return val
+
+
+def _file_approval_gate(**request) -> bool:
+    """Wait for an operator-written, exact one-shot approval artifact."""
+    approval_name = os.environ.get("HP_APPROVAL_FILE", "").strip()
+    if not approval_name:
+        return False
+
+    approval_path = Path(approval_name)
+    approval_path.parent.mkdir(parents=True, exist_ok=True)
+    request_path = approval_path.with_name(approval_path.name + ".request.json")
+    request_path.write_text(json.dumps(request, sort_keys=True), encoding="utf-8")
+
+    try:
+        timeout = max(1.0, float(os.environ.get("HP_APPROVAL_TIMEOUT", "300")))
+    except ValueError:
+        timeout = 300.0
+    deadline = time.monotonic() + timeout
+    required = ("intent_id", "quote_id", "prepared_hash")
+
+    while time.monotonic() < deadline:
+        try:
+            decision = json.loads(approval_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            time.sleep(0.1)
+            continue
+
+        matches = all(decision.get(key) == request.get(key) for key in required)
+        choice = decision.get("choice")
+        try:
+            approval_path.unlink()
+        except FileNotFoundError:
+            pass
+        return choice == "once" and matches
+
+    return False
 
 
 def main() -> int:
@@ -89,7 +126,10 @@ def main() -> int:
     # Ensure the buzz CLI directory is on PATH for the spawned subprocess.
     _buzz_dir = str(Path(env["BUZZ_BIN"]).resolve().parent)
     os.environ["PATH"] = _buzz_dir + ":" + os.environ.get("PATH", "")
-    svc = PaymentService.from_env(env)
+    svc = PaymentService.from_env(
+        env,
+        approval_gate=_file_approval_gate if os.environ.get("HP_APPROVAL_FILE") else None,
+    )
 
     # ready handshake
     sys.stdout.write(json.dumps({"event": "ready", "role": role}) + "\n")
@@ -133,12 +173,16 @@ def _dispatch(svc: PaymentService, name: str, cmd: dict):
         return svc.execute(
             intent_id=cmd["intent_id"],
             prepared_hash=cmd["prepared_hash"],
-            approve=bool(cmd.get("approve", False)),
         )
     if name == "status":
         return {"intents": svc.status()}
     if name == "reconcile":
         return svc.reconcile(intent_id=cmd["intent_id"])
+    if name == "receive":
+        return svc.receive(
+            intent_id=cmd["intent_id"],
+            settlement_ref=cmd["settlement_ref"],
+        )
     return {"error": f"unknown cmd: {name}"}
 
 

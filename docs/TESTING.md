@@ -99,6 +99,30 @@ recovery observed `COMPLETE` in 8.335 seconds, activity showed exactly one
 matching Alice `send` and one Bob `recv`, and the final receipt-mediated state
 was `settled=1`.
 
+## P7 plugin gate — implementation closed, live settlement blocked
+
+The P7 plugin is tested separately from the P6 supervisor. The deterministic
+suite covers tool registration, explicit schemas, local approval binding,
+prepared-hash enforcement, receipt verification, and fail-closed ambiguous
+dispatch behavior. The two-process harness is
+`examples/p7_plugin/e2e_two_process.py` and uses isolated Alice/Bob state roots
+with the hosted Buzz relay.
+
+The latest live attempt completed intent, quote, prepare, approval, and one raw
+dispatch. Wavelength then exposed the same settlement reference as:
+
+```text
+Alice: SEND PENDING
+Bob:   RECV PENDING
+Alice: RECONCILIATION_REQUIRED
+Bob:   receipt rejected — status is PENDING, expected COMPLETE
+```
+
+The harness did not retry. This closes the P7 plugin implementation gate but
+does not close the live settlement gate. Investigating the Wavelength engine
+and stale pending Ark state is the next operational task. Do not start another
+live payment until that blocker is resolved or explicitly classified.
+
 ## Commands
 
 ```bash

@@ -5,7 +5,7 @@ BUZZ_PRIVATE_KEY and Wavelength daemon, then drives the full plugin flow over
 the real hosted Buzz relay:
 
     alice.pay -> bob.poll+accept_quote -> alice.poll+prepare
-             -> alice.execute(approve=True) -> settled
+             -> alice.prepare -> alice.execute() -> local human approval
 
 This matches the P6 model (one process per identity) and the plugin security
 boundary: each Hermes instance owns exactly one Buzz identity, and approval is
@@ -16,6 +16,7 @@ and the channel. No secrets are printed.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import subprocess
@@ -23,8 +24,8 @@ import sys
 import time
 from pathlib import Path
 
-ALICE_PK = "c55bd0f67c422e60bf9cd292d6c288795373c519e4b251946277ef0bc474d230"
-BOB_PK = "8ad4f9b40038585c958ddec505bdbbdc5adea57fdac1c55a4ff0470048d25d41"
+ALICE_PK = "cb4d650fb43711a4d7cd67dcadb05ccadbdeeaad27a81f539926d6f51c357e2b"
+BOB_PK = "be78d419c53f3c3eeb6670b84d98bd2306215fd2bae438a1a0b2e6abb44f486f"
 
 _REPO_ROOT = Path("/Users/albi/Projects/hermes-payments")  # absolute; subprocess-safe
 ROLE_RUNNER = _REPO_ROOT / "examples" / "p7_plugin" / "hp_role.py"
@@ -87,8 +88,14 @@ def load_env() -> dict:
 
 
 def role_env(base: dict, *, role: str, pubkey: str, wave_rpc: str) -> dict:
-    env = dict(base)
+    env = {
+        name: os.environ[name]
+        for name in ("HOME", "PATH", "TMPDIR")
+        if os.environ.get(name)
+    }
+    env.update(base)
     key = "BUZZ_ALICE_PRIVATE_KEY" if role == "alice" else "BUZZ_BOB_PRIVATE_KEY"
+    auth_tag = "BUZZ_ALICE_AUTH_TAG" if role == "alice" else "BUZZ_BOB_AUTH_TAG"
     env["HP_ROLE"] = role
     env["HP_PUBKEY"] = pubkey
     env["HP_APPROVER_PUBKEY"] = pubkey
@@ -96,11 +103,40 @@ def role_env(base: dict, *, role: str, pubkey: str, wave_rpc: str) -> dict:
     env["HP_STATE_ROOT"] = str(STATE_ROOT / role)
     env["HP_NETWORK"] = "signet"
     env["HP_WAVE_RPC_SERVER"] = wave_rpc
+    env["HP_APPROVAL_FILE"] = str(STATE_ROOT / role / "operator-approval.json")
     env["BUZZ_PRIVATE_KEY"] = env[key]
+    env["BUZZ_AUTH_TAG"] = env.get(auth_tag, "")
     return env
 
 
+def _write_operator_approval(*, intent_id: str, quote_id: str, prepared_hash: str) -> None:
+    path = STATE_ROOT / "alice" / "operator-approval.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps(
+            {
+                "choice": "once",
+                "intent_id": intent_id,
+                "quote_id": quote_id,
+                "prepared_hash": prepared_hash,
+            },
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    os.replace(tmp, path)
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--approve-live",
+        action="store_true",
+        help="write one exact local approval and allow the 2100-sat send",
+    )
+    args = parser.parse_args()
+
     base = load_env()
     if not base.get("BUZZ_ALICE_PRIVATE_KEY") or not base.get("BUZZ_BOB_PRIVATE_KEY"):
         print("missing keys in ~/.hermes/state/p7-e2e.env", file=sys.stderr)
@@ -124,7 +160,8 @@ def main() -> int:
         intent_id = pay.get("full_intent_id")
         print(f"[alice] intent submitted: state={pay.get('state')} id={str(intent_id)[:10]}...")
         if not intent_id:
-            print("[alice] NO full_intent_id:", pay); return 3
+            print("[alice] NO full_intent_id:", pay)
+            return 3
 
         # 2. Bob polls until he receives the intent (hosted relay has latency)
         invoice = _make_invoice(base, "127.0.0.1:11339")
@@ -133,26 +170,36 @@ def main() -> int:
             return 3
         quote = _retry_quote(bob, intent_id, invoice)
         print(f"[bob]   quote published: state={quote.get('state')} q={str(quote.get('quote_id'))[:12]}...")
-        quote_id = quote.get("quote_id")
+        quote_id = quote.get("full_quote_id")
         if not quote_id:
-            print("[bob] NO quote_id:", quote); return 3
+            print("[bob] NO quote_id:", quote)
+            return 3
 
         # 4. Alice polls until she has the quote, then prepares
         prep = _retry_prepare(alice, quote_id)
         print(f"[alice] prepared: state={prep.get('state')} fee={prep.get('fee_sat')}")
         full_hash = prep.get("full_prepared_hash")
         if not full_hash:
-            print("[alice] NO prepared hash:", prep); return 3
+            print("[alice] NO prepared hash:", prep)
+            return 3
 
-        # 5. Execute WITHOUT approval -> fail closed
-        noapp = alice.cmd({"cmd": "execute", "intent_id": intent_id, "prepared_hash": full_hash, "approve": False})
-        print(f"[alice] execute w/o approval: {noapp.get('error')}")
+        if not args.approve_live:
+            print(
+                "[operator] approval required: rerun with --approve-live "
+                "after reviewing this exact prepared payment; no money moved"
+            )
+            return 5
+        _write_operator_approval(
+            intent_id=intent_id,
+            quote_id=quote_id,
+            prepared_hash=full_hash,
+        )
+        exec_res = alice.cmd(
+            {"cmd": "execute", "intent_id": intent_id, "prepared_hash": full_hash}
+        )
+        print(f"[alice] execute: {exec_res.get('error', exec_res.get('state'))}")
 
-        # 6. Approve + execute -> settled
-        exec_res = alice.cmd({"cmd": "execute", "intent_id": intent_id, "prepared_hash": full_hash, "approve": True})
-        print(f"[alice] executed: state={exec_res.get('state')} ref={str(exec_res.get('settlement_ref'))[:16]}...")
-
-        # 7. Final status
+        # 6. Final status
         st = alice.cmd({"cmd": "status"})
         print("[alice] status:", json.dumps(st, indent=2))
         return 0 if exec_res.get("state") == "settled" else 4

@@ -7,9 +7,9 @@ Policy-first and fail-closed:
   - Each step is an explicit tool call. ``hp_pay`` only submits the intent.
   - ``hp_prepare`` accepts the recipient's quote and calls ``adapter.prepare()``,
     returning the ``prepared_hash``. No money moves.
-  - ``hp_execute`` requires ``approve: true`` AND the exact ``prepared_hash``
-    returned by ``hp_prepare``. The approval triple (intent, quote, hash) is
-    validated by ``PaymentOrchestrator.approve()``.
+  - ``hp_execute`` requests a real local Hermes approval bound to
+    ``(intent_id, quote_id, prepared_hash)``. The model cannot pass an approval
+    boolean or choose a session-wide approval.
   - No automatic retry on ambiguous settlement: ``RECONCILIATION_REQUIRED``
     is surfaced to the operator.
   - The recipient's quote always requires a real invoice (bolt11) supplied by
@@ -19,21 +19,25 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import time
+from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from hermes_payments.adapter import (
     SubprocessWavecliExecutor,
     WavelengthAdapter,
     redact_sensitive,
 )
+from hermes_payments.approval import request_human_approval
 from hermes_payments.models import (
     AgentIdentity,
     PaymentApproval,
     PaymentIntent,
     PaymentQuote,
+    PaymentReceipt,
     Rail,
     RailReceiveInstruction,
     compute_id,
@@ -41,6 +45,7 @@ from hermes_payments.models import (
 from hermes_payments.peer import HermesPeer
 from hermes_payments.peer_transport import PeerMessage
 from hermes_payments.policy import PaymentOrchestrator
+from hermes_payments.state_machine import PaymentState
 from hermes_payments.transport import BuzzTransport, SubprocessExecutor
 
 # ---------------------------------------------------------------------------
@@ -90,8 +95,10 @@ class PaymentService:
         state_root: Path,
         network: str,
         clock: Optional[Any] = None,
+        approval_gate: Optional[Any] = None,
     ) -> None:
         self._clock = clock or (lambda: int(time.time()))
+        self._approval_gate = approval_gate or request_human_approval
         self._identity = identity
         self._approver = approver
         self._channel = channel
@@ -104,6 +111,7 @@ class PaymentService:
             adapter=adapter,
             store_path=str(self._state_root / "store.json"),
             audit_path=str(self._state_root / "audit.jsonl"),
+            state_path=str(self._state_root / "orchestrator.json"),
             clock=self._clock,
         )
         self._peer = HermesPeer(
@@ -113,11 +121,94 @@ class PaymentService:
         )
         self._inbox: List[PeerMessage] = []
         self._inbox_ids: set[str] = set()
+        self._inbox_path = self._state_root / "inbox.json"
+        self._receipts_path = self._state_root / "published_receipts.json"
+        self._published_receipts: Dict[str, PaymentReceipt] = {}
+        self._load_persistent_messages()
 
-    # -- configuration ---------------------------------------------------
+    # -- durable transport-side state -------------------------------------
+
+    def _atomic_json_write(self, path: Path, payload: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _message_from_record(raw: Dict[str, Any]) -> Any:
+        models = {
+            "PaymentIntent": PaymentIntent,
+            "PaymentQuote": PaymentQuote,
+            "PaymentReceipt": PaymentReceipt,
+        }
+        message_type = raw.get("type")
+        model = models.get(message_type)
+        if model is None:
+            raise ConfigError(f"unsupported persisted peer message type: {message_type}")
+        return model.model_validate(raw["message"])
+
+    def _load_persistent_messages(self) -> None:
+        try:
+            if self._inbox_path.exists():
+                data = json.loads(self._inbox_path.read_text(encoding="utf-8"))
+                for raw in data:
+                    message = self._message_from_record(raw)
+                    peer_message = PeerMessage(
+                        message_id=str(raw["message_id"]),
+                        message=message,
+                        author=AgentIdentity.model_validate(raw["author"]),
+                        published_at=int(raw["published_at"]),
+                    )
+                    self._inbox.append(peer_message)
+                    self._inbox_ids.add(peer_message.message_id)
+            if self._receipts_path.exists():
+                data = json.loads(self._receipts_path.read_text(encoding="utf-8"))
+                for intent_id, raw in data.items():
+                    self._published_receipts[intent_id] = PaymentReceipt.model_validate(raw)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+            raise ConfigError(f"cannot load payment plugin state safely: {exc}") from exc
+
+    def _save_inbox(self) -> None:
+        self._atomic_json_write(
+            self._inbox_path,
+            [
+                {
+                    "message_id": message.message_id,
+                    "type": message.message.__class__.__name__,
+                    "message": message.message.model_dump(mode="json"),
+                    "author": message.author.model_dump(mode="json"),
+                    "published_at": message.published_at,
+                }
+                for message in self._inbox
+            ],
+        )
+
+    def _save_published_receipts(self) -> None:
+        self._atomic_json_write(
+            self._receipts_path,
+            {
+                intent_id: receipt.model_dump(mode="json")
+                for intent_id, receipt in self._published_receipts.items()
+            },
+        )
 
     @classmethod
-    def from_env(cls, env: Optional[Dict[str, str]] = None) -> "PaymentService":
+    def from_env(
+        cls,
+        env: Optional[Dict[str, str]] = None,
+        *,
+        approval_gate: Optional[Callable[..., bool]] = None,
+    ) -> "PaymentService":
         env = dict(os.environ if env is None else env)
 
         role = env.get("HP_ROLE", "").strip()
@@ -148,30 +239,11 @@ class PaymentService:
         state_root_path = Path(state_root)
 
         buzz_bin = env.get("BUZZ_BIN", "buzz")
-        relay_url = env.get("BUZZ_RELAY_URL", "").strip()
-        secret = env.get("BUZZ_PRIVATE_KEY", "").strip()
-        # Prefer a native NIP-01/42 WebSocket subscription when the relay and
-        # identity secret are configured: the relay PUSHES events in real time
-        # (no history refetch, no polling latency). Falls back to CLI polling.
-        nostr_sub = None
-        if relay_url and secret:
-            try:
-                from hermes_payments.nostr_sub import NostrSubscription
-
-                nostr_sub = NostrSubscription(
-                    relay_url=relay_url,
-                    channel=channel,
-                    secret=secret,
-                )
-                nostr_sub.connect()
-            except Exception as exc:  # noqa: BLE001 — fall back to polling
-                nostr_sub = None
         transport = BuzzTransport(
             executor=SubprocessExecutor(buzz_bin=buzz_bin, timeout=30),
             channel=channel,
             cursor_path=state_root_path / "buzz_cursor.json",
             local_pubkey=pubkey,
-            nostr_sub=nostr_sub,
         )
 
         adapter = WavelengthAdapter(
@@ -190,6 +262,7 @@ class PaymentService:
             channel=channel,
             state_root=state_root_path,
             network=network,
+            approval_gate=approval_gate,
         )
 
     # -- inbox / polling ---------------------------------------------------
@@ -206,14 +279,21 @@ class PaymentService:
                 continue
             self._inbox_ids.add(message.message_id)
             self._inbox.append(message)
-            fresh.append(
-                {
-                    "message_id": redacted(message.message_id),
-                    "type": message.message.__class__.__name__,
-                    "author": redacted(message.author.pubkey),
-                    "intent_id": redacted(getattr(message.message, "id", "")),
-                }
-            )
+            msg = message.message
+            intent_id = getattr(msg, "id", "") if isinstance(msg, PaymentIntent) else getattr(msg, "intent_id", "")
+            quote_id = getattr(msg, "quote_id", "")
+            entry: dict[str, Any] = {
+                "message_id": redacted(message.message_id),
+                "type": msg.__class__.__name__,
+                "author": redacted(message.author.pubkey),
+                "intent_id": intent_id,
+                "quote_id": quote_id or None,
+            }
+            if isinstance(msg, PaymentReceipt):
+                entry["settlement_ref"] = redacted(msg.settlement_ref)
+            fresh.append(entry)
+        if fresh:
+            self._save_inbox()
         return fresh
 
     def _find_intent_message(self, intent_id: str) -> PaymentIntent:
@@ -230,6 +310,32 @@ class PaymentService:
         """Submit and publish a payment intent."""
         if not idempotency_key:
             idempotency_key = f"hp-{int(self._clock())}"
+        for record in self._orchestrator.records():
+            existing = record.intent
+            if existing.idempotency_key != idempotency_key:
+                continue
+            requested = (
+                recipient_pubkey,
+                amount_sat,
+                purpose,
+                max_fee_sat,
+                expires_at,
+            )
+            recorded = (
+                existing.recipient.pubkey,
+                existing.amount_sat,
+                existing.purpose,
+                existing.max_fee_sat,
+                existing.expires_at,
+            )
+            if requested != recorded:
+                raise ValueError("idempotency_key already used with different payment data")
+            return {
+                "intent_id": redacted(existing.id),
+                "full_intent_id": existing.id,
+                "message_id": "already-submitted",
+                "state": record.state.value,
+            }
         intent = PaymentIntent(
             id="placeholder",
             idempotency_key=idempotency_key,
@@ -253,8 +359,14 @@ class PaymentService:
     def prepare(self, *, quote_id: str) -> dict[str, Any]:
         """Accept the matching quote and call adapter.prepare() (dry run)."""
         quote = self._find_quote(quote_id)
-        self._peer.accept_quote(quote)
-        prepared = self._orchestrator.prepare()
+        tracked_quote = self._orchestrator.get_quote(quote.intent_id)
+        if tracked_quote is not None and tracked_quote.quote_id != quote.quote_id:
+            raise ValueError("quote does not match the tracked intent")
+        if tracked_quote is None:
+            self._peer.accept_quote(quote)
+        prepared = self._orchestrator.get_prepared(quote.intent_id)
+        if prepared is None:
+            prepared = self._orchestrator.prepare(intent_id=quote.intent_id)
         return {
             "intent_id": redacted(quote.intent_id),
             "quote_id": redacted(quote.quote_id),
@@ -265,26 +377,59 @@ class PaymentService:
             "state": self._orchestrator.state(quote.intent_id).value,
         }
 
-    def execute(self, *, intent_id: str, prepared_hash: str, approve: bool) -> dict[str, Any]:
-        """Approve (explicit) and execute the settlement."""
-        if not approve:
-            return {
-                "error": "execution requires approve: true — no money moved",
-                "state": self._orchestrator.state(intent_id).value,
-            }
-        # Reject redacted hashes — approval must bind to the FULL prepared hash.
+    def execute(self, *, intent_id: str, prepared_hash: str) -> dict[str, Any]:
+        """Request local human approval and execute one prepared settlement."""
+        state = self._orchestrator.state(intent_id)
         full_hash = self._resolve_prepared_hash(intent_id, prepared_hash)
-        approval = PaymentApproval(
-            id="placeholder",
-            intent_id=intent_id,
-            quote_id=self._quote_id_for(intent_id),
-            prepared_hash=full_hash,
-            approver=self._approver,
-            created_at=int(self._clock()),
+        quote_id = self._quote_id_for(intent_id)
+        record = next(
+            record for record in self._orchestrator.records()
+            if record.intent.id == intent_id
         )
-        approval.id = compute_id(approval)
-        self._orchestrator.approve(approval)
-        receipt = self._orchestrator.execute()
+
+        if state == PaymentState.SETTLED and record.receipt is not None:
+            receipt = record.receipt
+            return {
+                "intent_id": redacted(receipt.intent_id),
+                "settlement_ref": redacted(receipt.settlement_ref),
+                "amount_sat": receipt.amount_sat,
+                "fee_sat": receipt.fee_sat,
+                "state": state.value,
+            }
+
+        if state == PaymentState.PREPARED:
+            approved = bool(
+                self._approval_gate(
+                    intent_id=intent_id,
+                    quote_id=quote_id,
+                    prepared_hash=full_hash,
+                    amount_sat=record.intent.amount_sat,
+                    fee_sat=record.prepared.fee_sat if record.prepared else 0,
+                    recipient_pubkey=record.intent.recipient.pubkey,
+                    purpose=record.intent.purpose,
+                )
+            )
+            if not approved:
+                return {
+                    "error": "human approval required — no money moved",
+                    "state": state.value,
+                }
+            approval = PaymentApproval(
+                id="placeholder",
+                intent_id=intent_id,
+                quote_id=quote_id,
+                prepared_hash=full_hash,
+                approver=self._approver,
+                created_at=int(self._clock()),
+            )
+            approval.id = compute_id(approval)
+            self._orchestrator.approve(approval)
+        elif state != PaymentState.APPROVED:
+            raise ValueError(f"intent {redacted(intent_id)} is not ready to execute: {state.value}")
+
+        receipt = self._orchestrator.execute(intent_id=intent_id)
+        if receipt is None:
+            raise RuntimeError("adapter returned no settlement receipt")
         return {
             "intent_id": redacted(receipt.intent_id),
             "settlement_ref": redacted(receipt.settlement_ref),
@@ -310,11 +455,23 @@ class PaymentService:
         intent = self._find_intent_message(intent_id)
         if not invoice.startswith("ln"):
             raise ValueError("invoice must be a valid bolt11 (starts with 'ln')")
+        existing = self._orchestrator.get_quote(intent.id)
+        if existing is not None:
+            existing_invoice = existing.receive_instruction.invoice
+            if existing_invoice != invoice:
+                raise ValueError("intent already has a quote for a different invoice")
+            return {
+                "intent_id": redacted(intent.id),
+                "quote_id": redacted(existing.quote_id),
+                "full_quote_id": existing.quote_id,
+                "message_id": "already-published",
+                "state": self._orchestrator.state(intent.id).value,
+            }
         self._peer.accept_intent(intent)
         quote = PaymentQuote(
             id="placeholder",
             intent_id=intent.id,
-            quote_id=f"q-{intent.id[:16]}-{int(self._clock())}",
+            quote_id=f"q-{intent.id[:16]}-{sha256(invoice.encode()).hexdigest()[:16]}",
             recipient=self._identity,
             receive_instruction=RailReceiveInstruction(
                 rail=Rail.LIGHTNING,
@@ -326,6 +483,7 @@ class PaymentService:
             created_at=int(self._clock()),
         )
         quote.id = compute_id(quote)
+        self._orchestrator.receive_quote(quote)
         message_id = self._peer.publish_quote(quote)
         return {
             "intent_id": redacted(intent.id),
@@ -337,21 +495,81 @@ class PaymentService:
             "state": self._orchestrator.state(intent.id).value,
         }
 
-    # -- status ------------------------------------------------------------
+    def receive(self, *, intent_id: str, settlement_ref: str) -> dict[str, Any]:
+        """Verify a rail settlement and publish one recipient receipt."""
+        intent = self._orchestrator.get_intent(intent_id)
+        if intent is None:
+            raise ValueError(f"intent {redacted(intent_id)} is not accepted locally")
+        quote = self._orchestrator.get_quote(intent_id)
+        if quote is None:
+            raise ValueError(f"intent {redacted(intent_id)} has no quote")
+        existing = self._published_receipts.get(intent_id)
+        if existing is not None:
+            if existing.settlement_ref != settlement_ref:
+                raise ValueError("intent already has a receipt for a different settlement")
+            return {
+                "intent_id": redacted(intent_id),
+                "quote_id": redacted(existing.quote_id),
+                "settlement_ref": redacted(existing.settlement_ref),
+                "amount_sat": existing.amount_sat,
+                "fee_sat": existing.fee_sat,
+                "message_id": "already-published",
+                "state": self._orchestrator.state(intent_id).value,
+            }
+
+        verification = self._adapter.verify_receipt(
+            settlement_ref=settlement_ref,
+            expected_amount_sat=intent.amount_sat,
+        )
+        if not verification.verified:
+            raise ValueError(
+                f"settlement verification failed: {verification.error or 'unknown'}"
+            )
+        if verification.amount_sat != intent.amount_sat:
+            raise ValueError("verified settlement amount does not match the intent")
+        if verification.fee_sat > intent.max_fee_sat:
+            raise ValueError("verified settlement fee exceeds max_fee_sat")
+
+        receipt = PaymentReceipt(
+            id="placeholder",
+            intent_id=intent.id,
+            quote_id=quote.quote_id,
+            recipient=self._identity,
+            settlement_ref=verification.settlement_ref,
+            amount_sat=verification.amount_sat,
+            fee_sat=verification.fee_sat,
+            rail=quote.receive_instruction.rail,
+            settled_at=int(self._clock()),
+            created_at=int(self._clock()),
+        )
+        receipt.id = compute_id(receipt)
+        message_id = self._peer.publish_receipt(receipt)
+        self._published_receipts[intent_id] = receipt
+        self._save_published_receipts()
+        return {
+            "intent_id": redacted(intent_id),
+            "quote_id": redacted(receipt.quote_id),
+            "settlement_ref": redacted(receipt.settlement_ref),
+            "amount_sat": receipt.amount_sat,
+            "fee_sat": receipt.fee_sat,
+            "message_id": redacted(message_id),
+            "state": self._orchestrator.state(intent_id).value,
+        }
 
     def status(self) -> List[dict[str, Any]]:
         out: List[dict[str, Any]] = []
-        for intent_id, rec in self._orchestrator._intents.items():  # type: ignore[attr-defined]
+        for record in self._orchestrator.records():
+            intent_id = record.intent.id
             out.append(
                 {
                     "intent_id": redacted(intent_id),
-                    "state": rec.state.value,
-                    "amount_sat": rec.intent.amount_sat,
-                    "purpose": rec.intent.purpose,
-                    "recipient": redacted(rec.intent.recipient.pubkey),
+                    "state": record.state.value,
+                    "amount_sat": record.intent.amount_sat,
+                    "purpose": record.intent.purpose,
+                    "recipient": redacted(record.intent.recipient.pubkey),
                     "prepared_hash": (
-                        redacted(rec.prepared.prepared_hash)
-                        if rec.prepared is not None
+                        redacted(record.prepared.prepared_hash)
+                        if record.prepared is not None
                         else None
                     ),
                 }
@@ -360,7 +578,7 @@ class PaymentService:
 
     def balance(self) -> dict[str, Any]:
         try:
-            result = self._adapter._executor.run(["wallet", "balance"])  # type: ignore[attr-defined]
+            result = self._adapter._executor.run(["wavecli", "wallet", "balance"])  # type: ignore[attr-defined]
             return {"balance": result}
         except Exception as exc:
             return {"error": redact_sensitive(str(exc))}
@@ -435,7 +653,6 @@ def _tool_hp_execute(args, **kwargs):
             svc.execute(
                 intent_id=args["intent_id"],
                 prepared_hash=args["prepared_hash"],
-                approve=bool(args.get("approve", False)),
             ),
             sort_keys=True,
         )
@@ -449,6 +666,20 @@ def _tool_hp_accept_quote(args, **kwargs):
         return json.dumps(
             svc.accept_and_quote(
                 intent_id=args["intent_id"], invoice=args["invoice"]
+            ),
+            sort_keys=True,
+        )
+    except Exception as exc:
+        return json.dumps({"error": redact_sensitive(str(exc))}, sort_keys=True)
+
+
+def _tool_hp_receive(args, **kwargs):
+    svc = _service()
+    try:
+        return json.dumps(
+            svc.receive(
+                intent_id=args["intent_id"],
+                settlement_ref=args["settlement_ref"],
             ),
             sort_keys=True,
         )
@@ -504,7 +735,7 @@ def register(ctx) -> None:
         _tool_spec(
             "hp_pay",
             "Submit a payment intent to a recipient over Buzz+Wavelength. Does NOT move money — "
-            "returns an intent_id, then poll + prepare + approve + execute complete the flow.",
+            "returns an intent_id, then poll + prepare + execute complete the flow.",
             {
                 "recipient_pubkey": {"type": "string", "description": "Recipient 64-char hex pubkey"},
                 "amount_sat": {"type": "integer", "description": "Amount in satoshis"},
@@ -544,12 +775,12 @@ def register(ctx) -> None:
         "hermes-payments",
         _tool_spec(
             "hp_execute",
-            "Approve and execute a prepared payment. REQUIRES approve:true AND the exact prepared_hash from hp_prepare. "
-            "This is the only step that moves money.",
+            "Request a real one-shot local human approval and execute a prepared payment. "
+            "The approval is bound to the exact intent_id, quote_id, and prepared_hash; "
+            "there is no model-controlled approval boolean.",
             {
-                "intent_id": {"type": "string", "description": "The intent_id"},
+                "intent_id": {"type": "string", "description": "The full intent_id"},
                 "prepared_hash": {"type": "string", "description": "The FULL prepared_hash from hp_prepare"},
-                "approve": {"type": "boolean", "description": "MUST be true to move money"},
             },
             ["intent_id", "prepared_hash"],
         ),
@@ -568,6 +799,21 @@ def register(ctx) -> None:
             ["intent_id", "invoice"],
         ),
         _tool_hp_accept_quote,
+    )
+    ctx.register_tool(
+        "hp_receive",
+        "hermes-payments",
+        _tool_spec(
+            "hp_receive",
+            "Recipient: verify a settlement on the configured rail and publish one receipt. "
+            "A failed verification never publishes a receipt.",
+            {
+                "intent_id": {"type": "string", "description": "The full intent_id"},
+                "settlement_ref": {"type": "string", "description": "Rail settlement reference"},
+            },
+            ["intent_id", "settlement_ref"],
+        ),
+        _tool_hp_receive,
     )
     ctx.register_tool(
         "hp_reconcile",

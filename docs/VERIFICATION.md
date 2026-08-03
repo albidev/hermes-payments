@@ -34,6 +34,24 @@ The remaining work is strict regtest reproducibility, operator-availability,
 production, custody, and mainnet evidence. Signet remains a test network and
 not a production or mainnet claim.
 
+## P7 plugin gate
+
+| Gate | Evidence required | Status |
+|---|---|---:|
+| Plugin tools and registration | All declared tools are registered with explicit schemas | **Verified in repository** — `plugins/hermes-payments/__init__.py` and `plugin.yaml` |
+| Local human approval | Approval is bound to `(intent_id, quote_id, prepared_hash)` and never serialized | **Verified in repository** — plugin tests |
+| Exact prepared execution | `hp_execute` rejects missing, redacted, or mismatched prepared hashes | **Verified in repository** — plugin tests |
+| Ambiguous dispatch safety | `PENDING`/unknown stays reconciliation-required; no retry path | **Verified in repository** — policy/plugin tests |
+| Two-process plugin boundary | Separate role identities, full IDs, real Buzz coordination harness | **Verified structurally** — `examples/p7_plugin/e2e_two_process.py` |
+| Live Signet settlement | Alice `SEND COMPLETE`, Bob `RECV COMPLETE`, Bob receipt, Alice `SETTLED` | **Blocked on Wavelength engine** — latest run remained `PENDING` for both sides |
+
+The blocked live row is intentional. The latest P7 attempt dispatched exactly
+once and then remained ambiguous; reconciliation returned `PENDING`, Bob
+rejected the receipt because his entry was not `COMPLETE`, and Alice remained
+`RECONCILIATION_REQUIRED`. No automatic retry was performed. The earlier P6
+live settlement and crash/restart evidence remains valid and is documented
+separately above.
+
 ## Signet evidence history
 
 The earlier pre-settlement observation was a pending bootstrap balance and a complete `in_ark` quote. It is superseded as the current Signet status by the completed evidence in [live-signet-buzz-vertical.md](live-signet-buzz-vertical.md), which includes two Hermes processes, hosted kind-9 coordination, exact prepared execution, crash/restart recovery on the same state roots, matching complete Alice/Bob activity, and a Bob-authored receipt.

@@ -67,6 +67,7 @@ class RawBuzzEvent:
     content: str
     tags: list[list[str]]
     created_at: int
+    sig: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +243,7 @@ class SubprocessExecutor(BuzzExecutor):
                         content=ev["content"],
                         tags=ev.get("tags", []),
                         created_at=ev.get("created_at", 0),
+                        sig=ev.get("sig", ""),
                     )
                 )
             except (KeyError, TypeError) as e:
@@ -519,11 +521,8 @@ class BuzzTransport:
         # may return the same newest events on every poll, starving older
         # unseen messages.  Fetch the scoped batch, then apply ``limit`` to
         # messages that are genuinely new to this process.
-        # Native Nostr subscription (push-based, NIP-01): the relay streams
-        # matching events over a persistent WebSocket, so we do NOT refetch
-        # history. Falls back to CLI polling when no subscriber is configured.
         if self._nostr_sub is not None:
-            raw_events = self._nostr_sub.poll_events()
+            raw_events = self._nostr_sub.poll_events(since=since)
         else:
             raw_events = self._executor.get(
                 channel=self._channel,
@@ -537,10 +536,11 @@ class BuzzTransport:
             )
         messages: list[PeerMessage] = []
         cursor_changed = False
+        staged_seen_event_ids = set(self._seen_event_ids)
         for event in raw_events:
-            if event.id in self._seen_event_ids:
+            if event.id in staged_seen_event_ids:
                 continue
-            self._seen_event_ids.add(event.id)
+            staged_seen_event_ids.add(event.id)
             cursor_changed = True
 
             # A channel query is a broadcast view.  A configured process
@@ -566,8 +566,19 @@ class BuzzTransport:
             if limit is not None and len(messages) >= limit:
                 break
         if cursor_changed:
-            self._save_cursor()
+            previous_seen_event_ids = self._seen_event_ids
+            self._seen_event_ids = staged_seen_event_ids
+            try:
+                self._save_cursor()
+            except Exception:
+                self._seen_event_ids = previous_seen_event_ids
+                raise
         return messages
+
+    def close(self) -> None:
+        """Release the optional native subscriber connection."""
+        if self._nostr_sub is not None:
+            self._nostr_sub.close()
 
     def receive(self, *, limit: Optional[int] = None) -> list[PeerMessage]:
         """Receive validated messages through the generic peer contract."""

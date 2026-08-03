@@ -7,7 +7,7 @@ policy-enforcement contract:
   - wiring of identity/approver/transport/adapter
   - hp_pay does NOT move money
   - hp_prepare returns the full prepared_hash
-  - hp_execute requires approve:true and the exact hash
+  - hp_execute requires a real injected human approval gate and the exact hash
   - redacted prepared hashes are rejected
   - recipient accept_and_quote requires a real bolt11 invoice
 """
@@ -19,7 +19,13 @@ import pytest
 from hermes_payments_plugin import ConfigError, PaymentService, redacted
 
 from hermes_payments.adapter import FakeWavecliExecutor, PrepareResult, Rail, ReconcileResult
-from hermes_payments.models import AgentIdentity, PaymentIntent, PaymentQuote, compute_id
+from hermes_payments.models import (
+    AgentIdentity,
+    PaymentIntent,
+    PaymentQuote,
+    compute_id,
+    compute_prepared_hash,
+)
 from hermes_payments.peer_transport import InMemoryTransportHub
 
 ALICE_PK = "c55bd0f67c422e60bf9cd292d6c288795373c519e4b251946277ef0bc474d230"
@@ -39,7 +45,7 @@ def make_fake_adapter(*, network: str = "regtest"):
             self.prepare_calls += 1
             return PrepareResult(
                 fee_sat=0,
-                prepared_hash="a" * 64,
+                prepared_hash=compute_prepared_hash(b"prepared-payload"),
                 rail=Rail.LIGHTNING,
                 prepared_payload=b"prepared-payload",
             )
@@ -85,6 +91,18 @@ def make_fake_adapter(*, network: str = "regtest"):
     return FakeAdapter()
 
 
+class ApprovalProbe:
+    """Deterministic stand-in for Hermes' real human approval queue."""
+
+    def __init__(self, decision: bool = True):
+        self.decision = decision
+        self.requests = []
+
+    def __call__(self, **request):
+        self.requests.append(request)
+        return self.decision
+
+
 class FakeTransport:
     """Minimal in-memory transport backed by a shared hub, mimicking PeerTransport."""
 
@@ -104,6 +122,7 @@ def two_peers(tmp_path):
 
     alice_adapter = make_fake_adapter()
     bob_adapter = make_fake_adapter()
+    alice_approval = ApprovalProbe()
 
     alice = PaymentService(
         identity=AgentIdentity(pubkey=ALICE_PK, relay_url=None),
@@ -113,6 +132,7 @@ def two_peers(tmp_path):
         channel="chan",
         state_root=tmp_path / "alice",
         network="regtest",
+        approval_gate=alice_approval,
     )
     bob = PaymentService(
         identity=AgentIdentity(pubkey=BOB_PK, relay_url=None),
@@ -201,29 +221,72 @@ def test_full_flow_requires_approval(two_peers):
     assert len(prep["full_prepared_hash"]) == 64
     assert alice_adapter.execute_calls == 0
 
-    # Execute WITHOUT approval → fail-closed
+    # The gate denies → fail-closed. The model cannot override this with a
+    # boolean argument because hp_execute no longer accepts one.
+    alice._approval_gate = ApprovalProbe(decision=False)
     no_approve = alice.execute(
-        intent_id=intent_id, prepared_hash=prep["full_prepared_hash"], approve=False
+        intent_id=intent_id, prepared_hash=prep["full_prepared_hash"]
     )
-    assert "approve: true" in no_approve["error"]
+    assert "human approval" in no_approve["error"]
     assert alice_adapter.execute_calls == 0
 
-    # Execute with wrong hash → rejected
+    # Execute with wrong hash → rejected before asking the human.
     with pytest.raises(ValueError):
-        alice.execute(intent_id=intent_id, prepared_hash="x" * 64, approve=True)
+        alice.execute(intent_id=intent_id, prepared_hash="x" * 64)
     assert alice_adapter.execute_calls == 0
 
     # Execute with redacted hash → rejected
     with pytest.raises(ValueError):
-        alice.execute(intent_id=intent_id, prepared_hash=redacted(prep["full_prepared_hash"]), approve=True)
+        alice.execute(intent_id=intent_id, prepared_hash=redacted(prep["full_prepared_hash"]))
     assert alice_adapter.execute_calls == 0
 
-    # Execute with correct hash + approve → settles
+    # Only the injected human gate can authorize the exact triple.
+    alice._approval_gate = ApprovalProbe(decision=True)
     exec_res = alice.execute(
-        intent_id=intent_id, prepared_hash=prep["full_prepared_hash"], approve=True
+        intent_id=intent_id, prepared_hash=prep["full_prepared_hash"]
     )
     assert exec_res["state"] == "settled"
     assert alice_adapter.execute_calls == 1
+
+
+def test_payment_state_survives_restart(two_peers, tmp_path):
+    alice, _, alice_adapter, _ = two_peers
+    pay = alice.pay(
+        recipient_pubkey=BOB_PK, amount_sat=2100, purpose="restart",
+        max_fee_sat=10, expires_at=int(time.time()) + 600, idempotency_key="restart",
+    )
+    intent_id = _full_intent_id(pay)
+
+    # Build the quote directly in the sender's policy engine for this
+    # persistence-focused test.
+    quote = PaymentQuote(
+        id="placeholder",
+        intent_id=intent_id,
+        quote_id="q-restart",
+        recipient=AgentIdentity(pubkey=BOB_PK, relay_url=None),
+        receive_instruction={"rail": Rail.LIGHTNING, "invoice": "lnbc2100"},
+        fee_sat=0,
+        expires_at=int(time.time()) + 600,
+        created_at=int(time.time()),
+    )
+    quote.id = compute_id(quote)
+    alice._orchestrator.receive_quote(quote)
+    prepared = alice._orchestrator.prepare(intent_id=intent_id)
+    assert prepared.prepared_hash
+
+    restarted = PaymentService(
+        identity=AgentIdentity(pubkey=ALICE_PK, relay_url=None),
+        approver=AgentIdentity(pubkey=ALICE_PK, relay_url=None),
+        transport=alice._peer._transport,
+        adapter=alice_adapter,
+        channel="chan",
+        state_root=tmp_path / "alice",
+        network="regtest",
+        approval_gate=ApprovalProbe(decision=True),
+    )
+    assert restarted._orchestrator.state(intent_id).value == "prepared"
+    result = restarted.execute(intent_id=intent_id, prepared_hash=prepared.prepared_hash)
+    assert result["state"] == "settled"
 
 
 def test_accept_quote_requires_bolt11(two_peers):
