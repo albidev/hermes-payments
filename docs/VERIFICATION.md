@@ -43,16 +43,14 @@ not a production or mainnet claim.
 | Exact prepared execution | `hp_execute` rejects missing, redacted, or mismatched prepared hashes | **Verified in repository** — plugin tests |
 | Ambiguous dispatch safety | `PENDING`/unknown stays reconciliation-required; no retry path | **Verified in repository** — policy/plugin tests |
 | Two-process plugin boundary | Separate role identities, full IDs, real Buzz coordination harness | **Verified structurally** — `examples/p7_plugin/e2e_two_process.py` |
-| Live Signet settlement | Alice `SEND COMPLETE`, Bob `RECV COMPLETE`, Bob receipt, Alice `SETTLED` | **Blocked on Wavelength engine** — latest run had 1,345 spendable sats for a 2,100-sat funding attempt and remained `PENDING` |
+| Live Signet settlement | Alice `SEND COMPLETE`, Bob `RECV COMPLETE`, Bob receipt, Alice `SETTLED` | **Verified** — fixed daemon, one send/recv, reconciliation, receipt acceptance |
 
-The blocked live row is intentional. The latest P7 attempt dispatched exactly
-once, but Alice had only 1,345 spendable sats for the 2,100-sat funding
-attempt. Wavelength returned `ResourceExhausted: insufficient spendable funds`
-and incorrectly left the durable swap at `FUNDING_INITIATED`; the engine fix is
-now isolated in the Wavelength checkout. The plugin did not retry, Bob rejected
-the receipt because his entry was not `COMPLETE`, and Alice remained
-`RECONCILIATION_REQUIRED`. The earlier P6 live settlement and crash/restart
-evidence remains valid and is documented separately above.
+The latest live P7 attempt dispatched exactly once and initially returned
+`PENDING`, which correctly moved Alice to `RECONCILIATION_REQUIRED`. The fixed
+daemon completed the in-Ark swap seven seconds later. Read-only reconciliation
+returned `COMPLETE`; Bob verified his own `RECV` activity and published one
+receipt; Alice accepted it and reached `SETTLED`. The final evidence contains
+exactly one Alice `SEND` and one Bob `RECV` for the same settlement reference.
 
 ## Signet evidence history
 

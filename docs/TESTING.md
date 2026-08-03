@@ -99,7 +99,7 @@ recovery observed `COMPLETE` in 8.335 seconds, activity showed exactly one
 matching Alice `send` and one Bob `recv`, and the final receipt-mediated state
 was `settled=1`.
 
-## P7 plugin gate — implementation closed, live settlement blocked
+## P7 plugin gate — implementation and live settlement verified
 
 The P7 plugin is tested separately from the P6 supervisor. The deterministic
 suite covers tool registration, explicit schemas, local approval binding,
@@ -109,22 +109,19 @@ dispatch behavior. The two-process harness is
 with the hosted Buzz relay.
 
 The latest live attempt completed intent, quote, prepare, approval, and one raw
-dispatch. Wavelength then exposed the same settlement reference as:
+dispatch. Wavelength initially exposed the same settlement reference as:
 
 ```text
 Alice: SEND PENDING
 Bob:   RECV PENDING
 Alice: RECONCILIATION_REQUIRED
-Bob:   receipt rejected — status is PENDING, expected COMPLETE
 ```
 
-The harness did not retry. Inspection showed Alice had only 1,345 spendable
-sats for the 2,100-sat attempt; Wavelength returned
-`ResourceExhausted: insufficient spendable funds` but left the swap at
-`FUNDING_INITIATED` and both activity rows at `PENDING`. The engine fix
-terminalizes this authoritative balance rejection as `FAILED`; the live gate
-still requires one fresh run with a funded sender. Do not start another live
-payment until the fixed daemon is deployed and the sender balance is verified.
+The harness then performed bounded read-only reconciliation. The fixed daemon
+reported `COMPLETE` seven seconds later; Bob verified his own `RECV` activity
+and published one receipt; Alice accepted the receipt and reached `SETTLED`.
+The final evidence showed exactly one Alice `SEND` and one Bob `RECV` for the
+same settlement reference. No automatic retry occurred.
 
 ## Commands
 

@@ -296,6 +296,22 @@ class PaymentService:
             self._save_inbox()
         return fresh
 
+    def accept_receipt(self, *, intent_id: str) -> dict[str, Any]:
+        """Accept one matching receipt already present in the local inbox."""
+        for message in self._inbox:
+            msg = message.message
+            if not isinstance(msg, PaymentReceipt) or msg.intent_id != intent_id:
+                continue
+            receipt = self._peer.accept_receipt(msg)
+            return {
+                "intent_id": redacted(receipt.intent_id),
+                "settlement_ref": redacted(receipt.settlement_ref),
+                "amount_sat": receipt.amount_sat,
+                "fee_sat": receipt.fee_sat,
+                "state": self._orchestrator.state(intent_id).value,
+            }
+        raise LookupError(f"receipt for intent {redacted(intent_id)} not in inbox")
+
     def _find_intent_message(self, intent_id: str) -> PaymentIntent:
         for message in self._inbox:
             msg = message.message
@@ -445,6 +461,7 @@ class PaymentService:
             "intent_id": redacted(intent_id),
             "status": result.status,
             "settlement_ref": redacted(result.settlement_ref or ""),
+            "full_settlement_ref": result.settlement_ref or "",
             "state": self._orchestrator.state(intent_id).value,
         }
 

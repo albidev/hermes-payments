@@ -199,10 +199,58 @@ def main() -> int:
         )
         print(f"[alice] execute: {exec_res.get('error', exec_res.get('state'))}")
 
-        # 6. Final status
-        st = alice.cmd({"cmd": "status"})
-        print("[alice] status:", json.dumps(st, indent=2))
-        return 0 if exec_res.get("state") == "settled" else 4
+        # 6. A raw Send may legitimately return PENDING even when the
+        # daemon completes the swap shortly afterwards. Reconcile is
+        # read-only and must run before the recipient publishes a receipt.
+        if exec_res.get("state") == "settled":
+            print("[alice] settled directly")
+            return 0
+
+        reconcile_deadline = time.time() + 720
+        reconciliation = {}
+        while time.time() < reconcile_deadline:
+            reconciliation = alice.cmd({"cmd": "reconcile", "intent_id": intent_id})
+            print(f"[alice] reconcile: {reconciliation}")
+            status = reconciliation.get("status")
+            if status == "COMPLETE":
+                break
+            if status == "UNKNOWN":
+                print("[alice] reconciliation is UNKNOWN; stopping fail-closed", file=sys.stderr)
+                return 4
+            time.sleep(2)
+        else:
+            print("[alice] reconciliation timeout", file=sys.stderr)
+            return 4
+
+        settlement_ref = reconciliation.get("full_settlement_ref")
+        if not settlement_ref:
+            print("[alice] COMPLETE without settlement_ref", file=sys.stderr)
+            return 4
+
+        # 7. Bob verifies his own recv activity and publishes exactly one
+        # receipt. Alice then accepts that externally-authored receipt.
+        bob_receipt = bob.cmd(
+            {
+                "cmd": "receive",
+                "intent_id": intent_id,
+                "settlement_ref": settlement_ref,
+            }
+        )
+        print(f"[bob] receipt: {bob_receipt}")
+        if bob_receipt.get("error"):
+            return 4
+
+        receipt_deadline = time.time() + 150
+        while time.time() < receipt_deadline:
+            alice.cmd({"cmd": "poll"})
+            accepted = alice.cmd({"cmd": "accept_receipt", "intent_id": intent_id})
+            if accepted.get("state") == "settled":
+                print(f"[alice] receipt accepted: {accepted}")
+                return 0
+            time.sleep(2)
+
+        print("[alice] receipt timeout", file=sys.stderr)
+        return 4
     finally:
         alice.close()
         bob.close()

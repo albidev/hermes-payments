@@ -50,14 +50,13 @@ exact prepared payload, reject redacted or mismatched hashes, and fail closed
 on ambiguous settlement. The two-process P7 harness also verifies role-specific
 Buzz identities, full cross-process identifiers, and one-shot local approval.
 
-The current live P7 run reached the raw dispatch boundary exactly once, but the
-Alice wallet had only 1,345 spendable sats for a 2,100-sat funding attempt.
-Wavelength returned an authoritative `ResourceExhausted` balance error, then
-left the swap in `FUNDING_INITIATED` and the wallet entries in `PENDING` instead
-of recording a terminal failure. The plugin correctly kept Alice in
-`RECONCILIATION_REQUIRED` and Bob refused to publish a receipt. P7 code closure
-is complete; the Wavelength engine fix is tracked separately and the live gate
-must be rerun with a funded sender.
+The live P7 gate is now verified. With the fixed Wavelength daemon and Alice
+funded at 3,445 sats, the raw dispatch returned `PENDING` as designed; read-only
+reconciliation observed `COMPLETE` seven seconds later. Bob independently
+verified his `RECV`, published one receipt, and Alice accepted it. The run
+produced exactly one `SEND` and one `RECV` for the same settlement reference,
+with no automatic retry. The earlier insufficient-funds run remains historical
+evidence of the engine bug fixed in the Wavelength checkout.
 
 ## Rail evolution
 

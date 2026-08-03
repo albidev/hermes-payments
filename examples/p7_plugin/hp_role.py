@@ -23,6 +23,8 @@ Commands on stdin (one per line):
     {"cmd":"prepare","quote_id":"<full quote_id>"}
     {"cmd":"execute","intent_id":"<full id>","prepared_hash":"<full hash>"}
     {"cmd":"status"}
+    {"cmd":"accept_receipt","intent_id":"<full id>"}
+    {"cmd":"reconcile","intent_id":"<full id>"}
 
 The full identifiers are exchanged via JSONL (never redacted) because the two
 role processes coordinate over the shared Buzz channel, not through stdout.
@@ -176,6 +178,8 @@ def _dispatch(svc: PaymentService, name: str, cmd: dict):
         )
     if name == "status":
         return {"intents": svc.status()}
+    if name == "accept_receipt":
+        return svc.accept_receipt(intent_id=cmd["intent_id"])
     if name == "reconcile":
         return svc.reconcile(intent_id=cmd["intent_id"])
     if name == "receive":
