@@ -518,7 +518,11 @@ class BuzzTransport:
             channel=self._channel,
             kinds=[WIRE_KIND],
             since=since,
-            limit=None,
+            # Use an explicit high fetch limit so the CLI returns enough
+            # history. A `--limit` omitted (None) makes `buzz messages get`
+            # fall back to a small default, so recent legacy messages fill the
+            # window and a fresh intent is starved out before it is seen.
+            limit=500,
         )
         messages: list[PeerMessage] = []
         cursor_changed = False

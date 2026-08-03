@@ -33,7 +33,13 @@ import sys
 import time
 from pathlib import Path
 
-# PYTHONPATH must include repo root and src/.
+# Ensure this repo's src/ and root are on the path BEFORE importing hermes_payments,
+# regardless of how the script is invoked (avoids resolving to a stale worktree).
+_REPO_ROOT = Path(__file__).resolve().parent.parents[1]
+for _p in (str(_REPO_ROOT), str(_REPO_ROOT / "src")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from hermes_payments.models import AgentIdentity
 
 # The plugin dir has a hyphen (required by Hermes discovery) so it is not a
