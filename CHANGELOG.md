@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ## Unreleased
 
+- (none)
+
+## 0.1.1
+
+Checkpoint tag for the verified P6 live test: two real Hermes processes
+exchanged a 2,100 sats payment on Signet over the hosted Buzz relay. Use this
+tag as the reproduction anchor for the live testbook in
+`docs/live-signet-buzz-vertical.md` and `docs/TESTING.md`.
+
 - Redacted full live evidence identifiers from public documentation while retaining short verification prefixes.
 - Documented the current single-active-payment-flow limitation of `PaymentOrchestrator` and the requirements for future concurrency.
 - Added the transport-neutral `PeerTransport` contract and role-neutral `HermesPeer` endpoint.
@@ -13,6 +22,7 @@ All notable changes to this project are documented here.
 - Documented the distinction between on-chain bootstrap funding and the actual settlement rail.
 - Documented the current Wavelength route-semantics gap: an invoice quote may be internally settled through Ark, while the protocol still exposes `lightning` as its only rail.
 - Added versioned Mermaid flow sources and a standalone architecture diagram.
+- Added the two-Hermes process boundary (`examples/two_hermes_regtest/`): process runner, JSONL supervisor protocol, Buzz transport with cursor persistence/dedup, and bounded crash recovery (fail-closed, no automatic retry).
 
 ## 0.1.0
 
