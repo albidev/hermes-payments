@@ -23,7 +23,7 @@ import json
 import time
 from typing import List, Optional
 
-from .transport import RawBuzzEvent, BuzzTransportError
+from .transport import BuzzTransportError, RawBuzzEvent
 
 
 def _nsec_to_secret(nsec_or_hex: str) -> bytes:

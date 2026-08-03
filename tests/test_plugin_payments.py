@@ -16,11 +16,9 @@ from __future__ import annotations
 import time
 
 import pytest
-
 from hermes_payments.adapter import FakeWavecliExecutor, PrepareResult, Rail, ReconcileResult
 from hermes_payments.models import AgentIdentity, PaymentIntent, PaymentQuote, compute_id
 from hermes_payments.peer_transport import InMemoryTransportHub
-
 from hermes_payments_plugin import ConfigError, PaymentService, redacted
 
 
