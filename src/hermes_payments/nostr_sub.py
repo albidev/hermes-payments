@@ -33,7 +33,7 @@ def _nsec_to_secret(nsec_or_hex: str) -> bytes:
         import bech32
 
         hrp, data = bech32.bech32_decode(s)
-        if hrp != "nsec":
+        if hrp != "nsec" or data is None:
             raise BuzzTransportError("invalid nsec secret")
         bits = bech32.convertbits(data, 5, 8, False)
         if bits is None:
@@ -73,7 +73,7 @@ def _sign_nip42(secret: bytes, challenge: str, relay_url: str) -> dict:
         "content": challenge,
     }
     event["id"] = _event_id(event)
-    digest = bytes.fromhex(event["id"])
+    digest = bytes.fromhex(str(event["id"]))
     event["sig"] = secp256k1.PrivateKey(secret).schnorr_sign(digest, None, True).hex()
     return event
 
@@ -112,13 +112,14 @@ class NostrSubscription:
         from websockets.sync.client import connect
 
         ws_url = self._relay.replace("http://", "ws://").replace("https://", "wss://")
-        self._ws = connect(ws_url, open_timeout=15)
+        ws = connect(ws_url, open_timeout=15)
+        self._ws = ws
         secret = _nsec_to_secret(self._secret)
 
         # 1. The relay sends an AUTH challenge first (NIP-42).
         challenge = None
         try:
-            first = json.loads(self._ws.recv(timeout=15))
+            first = json.loads(ws.recv(timeout=15))
             if first and first[0] == "AUTH":
                 challenge = first[1]
         except Exception:
@@ -126,10 +127,10 @@ class NostrSubscription:
 
         if challenge:
             auth_event = _sign_nip42(secret, challenge, self._relay)
-            self._ws.send(json.dumps(["AUTH", auth_event]))
+            ws.send(json.dumps(["AUTH", auth_event]))
 
         # 2. Subscribe: kind-9 for the channel.
-        self._ws.send(
+        ws.send(
             json.dumps(
                 ["REQ", self._sub_id, {"kinds": self._kinds, "#h": [self._channel]}]
             )
