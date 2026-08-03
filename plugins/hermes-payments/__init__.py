@@ -148,11 +148,30 @@ class PaymentService:
         state_root_path = Path(state_root)
 
         buzz_bin = env.get("BUZZ_BIN", "buzz")
+        relay_url = env.get("BUZZ_RELAY_URL", "").strip()
+        secret = env.get("BUZZ_PRIVATE_KEY", "").strip()
+        # Prefer a native NIP-01/42 WebSocket subscription when the relay and
+        # identity secret are configured: the relay PUSHES events in real time
+        # (no history refetch, no polling latency). Falls back to CLI polling.
+        nostr_sub = None
+        if relay_url and secret:
+            try:
+                from hermes_payments.nostr_sub import NostrSubscription
+
+                nostr_sub = NostrSubscription(
+                    relay_url=relay_url,
+                    channel=channel,
+                    secret=secret,
+                )
+                nostr_sub.connect()
+            except Exception as exc:  # noqa: BLE001 — fall back to polling
+                nostr_sub = None
         transport = BuzzTransport(
             executor=SubprocessExecutor(buzz_bin=buzz_bin, timeout=30),
             channel=channel,
             cursor_path=state_root_path / "buzz_cursor.json",
             local_pubkey=pubkey,
+            nostr_sub=nostr_sub,
         )
 
         adapter = WavelengthAdapter(
