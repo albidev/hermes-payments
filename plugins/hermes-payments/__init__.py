@@ -311,6 +311,9 @@ class PaymentService:
         return {
             "intent_id": redacted(intent.id),
             "quote_id": redacted(quote.quote_id),
+            # Full id for cross-process coordination (Bob → Alice), mirroring
+            # how pay() exposes full_intent_id. The redacted form is for logs.
+            "full_quote_id": quote.quote_id,
             "message_id": redacted(message_id),
             "state": self._orchestrator.state(intent.id).value,
         }

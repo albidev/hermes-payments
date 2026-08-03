@@ -183,7 +183,10 @@ def test_full_flow_requires_approval(two_peers):
 
     # Bob polls, accepts, quotes
     bob.poll()
-    bob.accept_and_quote(intent_id=intent_id, invoice="lnbc2100...")
+    q_result = bob.accept_and_quote(intent_id=intent_id, invoice="lnbc2100...")
+    # The full quote id must be exposed for cross-process coordination (P7).
+    assert "full_quote_id" in q_result
+    assert q_result["full_quote_id"].startswith("q-")
 
     # Alice polls the quote
     alice.poll()
