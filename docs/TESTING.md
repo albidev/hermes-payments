@@ -118,10 +118,13 @@ Alice: RECONCILIATION_REQUIRED
 Bob:   receipt rejected — status is PENDING, expected COMPLETE
 ```
 
-The harness did not retry. This closes the P7 plugin implementation gate but
-does not close the live settlement gate. Investigating the Wavelength engine
-and stale pending Ark state is the next operational task. Do not start another
-live payment until that blocker is resolved or explicitly classified.
+The harness did not retry. Inspection showed Alice had only 1,345 spendable
+sats for the 2,100-sat attempt; Wavelength returned
+`ResourceExhausted: insufficient spendable funds` but left the swap at
+`FUNDING_INITIATED` and both activity rows at `PENDING`. The engine fix
+terminalizes this authoritative balance rejection as `FAILED`; the live gate
+still requires one fresh run with a funded sender. Do not start another live
+payment until the fixed daemon is deployed and the sender balance is verified.
 
 ## Commands
 
