@@ -38,7 +38,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import TYPE_CHECKING, Callable, List, Optional
 
 from .envelope import WIRE_KIND, decode_content, encode_content
 from .models import (
@@ -48,6 +48,9 @@ from .models import (
     PaymentReceipt,
 )
 from .peer_transport import PeerMessage, message_author
+
+if TYPE_CHECKING:
+    from .nostr_sub import NostrSubscription
 
 # ---------------------------------------------------------------------------
 # Raw event from Buzz CLI
@@ -64,6 +67,7 @@ class RawBuzzEvent:
     content: str
     tags: list[list[str]]
     created_at: int
+    sig: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -239,6 +243,7 @@ class SubprocessExecutor(BuzzExecutor):
                         content=ev["content"],
                         tags=ev.get("tags", []),
                         created_at=ev.get("created_at", 0),
+                        sig=ev.get("sig", ""),
                     )
                 )
             except (KeyError, TypeError) as e:
@@ -427,6 +432,7 @@ class BuzzTransport:
         clock: Optional[Callable[[], int]] = None,
         cursor_path: Optional[Path] = None,
         local_pubkey: Optional[str] = None,
+        nostr_sub: Optional["NostrSubscription"] = None,
     ):
         if not channel:
             raise ValueError("channel UUID is required")
@@ -435,6 +441,7 @@ class BuzzTransport:
         self._clock = clock or (lambda: int(time.time()))
         self._cursor_path = cursor_path
         self._local_pubkey = local_pubkey
+        self._nostr_sub = nostr_sub
         self._seen_event_ids: set[str] = set()
         self._load_cursor()
 
@@ -514,18 +521,26 @@ class BuzzTransport:
         # may return the same newest events on every poll, starving older
         # unseen messages.  Fetch the scoped batch, then apply ``limit`` to
         # messages that are genuinely new to this process.
-        raw_events = self._executor.get(
-            channel=self._channel,
-            kinds=[WIRE_KIND],
-            since=since,
-            limit=None,
-        )
+        if self._nostr_sub is not None:
+            raw_events = self._nostr_sub.poll_events(since=since)
+        else:
+            raw_events = self._executor.get(
+                channel=self._channel,
+                kinds=[WIRE_KIND],
+                since=since,
+                # Use an explicit high fetch limit so the CLI returns enough
+                # history. A `--limit` omitted (None) makes `buzz messages get`
+                # fall back to a small default, so recent legacy messages fill
+                # the window and a fresh intent is starved out before it is seen.
+                limit=500,
+            )
         messages: list[PeerMessage] = []
         cursor_changed = False
+        staged_seen_event_ids = set(self._seen_event_ids)
         for event in raw_events:
-            if event.id in self._seen_event_ids:
+            if event.id in staged_seen_event_ids:
                 continue
-            self._seen_event_ids.add(event.id)
+            staged_seen_event_ids.add(event.id)
             cursor_changed = True
 
             # A channel query is a broadcast view.  A configured process
@@ -551,8 +566,19 @@ class BuzzTransport:
             if limit is not None and len(messages) >= limit:
                 break
         if cursor_changed:
-            self._save_cursor()
+            previous_seen_event_ids = self._seen_event_ids
+            self._seen_event_ids = staged_seen_event_ids
+            try:
+                self._save_cursor()
+            except Exception:
+                self._seen_event_ids = previous_seen_event_ids
+                raise
         return messages
+
+    def close(self) -> None:
+        """Release the optional native subscriber connection."""
+        if self._nostr_sub is not None:
+            self._nostr_sub.close()
 
     def receive(self, *, limit: Optional[int] = None) -> list[PeerMessage]:
         """Receive validated messages through the generic peer contract."""

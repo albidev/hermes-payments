@@ -36,7 +36,9 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 | Rail-neutral policy/state core | Implemented | `src/hermes_payments/policy.py`, `state_machine.py` |
 | Peer transport contract | Implemented | `src/hermes_payments/peer_transport.py`, `peer.py` |
 | Buzz transport adapter | Implemented | NIP-29 kind 9, `src/hermes_payments/transport.py` |
+| Optional native Nostr subscriber | Implemented, opt-in | NIP-01 event/signature validation, NIP-42 signer callback, bounded reconnect, `src/hermes_payments/nostr_sub.py` |
 | Wavelength adapter | Implemented for **regtest + explicitly approved Signet** | Raw `PrepareSend`/`Send`, read-only sender-side reconciliation, sender `activity --kind send`, recipient `activity --kind recv` |
+| Hermes Payments plugin | **Implementation complete; live settlement gate open** | `plugins/hermes-payments/`, `tests/test_plugin_payments.py`, [verification status](docs/VERIFICATION.md) |
 | Live Signet Wavelength settlement | Verified externally | [Settlement evidence](docs/live-signet-payment.md) |
 | Live Buzz + Wavelength Signet vertical | **Verified externally with two Hermes processes and live crash recovery** | [Combined live evidence](docs/live-signet-buzz-vertical.md) |
 | Live Buzz kind-9 transport | Verified on hosted relay for the latest vertical; local relay smoke evidence retained | [Transport evidence](docs/live-buzz-transport.md) |
@@ -45,6 +47,12 @@ Hermes Payments separates the part that decides **whether a payment is allowed**
 | Ark as a first-class protocol rail | Intentionally open | `docs/RAILS.md` |
 
 The repository currently models a Lightning invoice as the receive instruction. Wavelength may select an internal route such as `in_ark` while preparing that invoice; that internal route is not yet exposed as a distinct wire-level `Rail` value. This distinction is documented rather than hidden. See [Rails and settlement semantics](docs/RAILS.md).
+
+The P7 plugin implementation is complete and deterministic tests are green.
+Its latest live Signet attempt reached one raw dispatch but remained
+`SEND PENDING`/`RECV PENDING`; the plugin failed closed and did not retry.
+That operational settlement blocker belongs to the Wavelength engine, so this
+repository does not claim a second live P7 settlement until the engine is fixed.
 
 ## The protocol in one picture
 
@@ -81,6 +89,24 @@ pytest -q
 ```
 
 The test suite is deterministic and offline. It uses `InMemoryTransportHub` for the transport-neutral two-peer proof, `FakeExecutor` for the Buzz adapter, and `FakeWavecliExecutor` for Wavelength. Passing tests prove protocol composition and safety invariants; they do **not** prove that a live daemon or relay is reachable.
+
+### Optional native Nostr subscription
+
+`NostrSubscription` is an opt-in transport component for integrations that need
+push delivery. Install the `native-nostr` extra when using it:
+`python -m pip install -e '.[native-nostr]'`. It does not accept a `nsec` or raw
+private key. The caller must
+inject an `auth_signer(relay_url, challenge)` callback that belongs to an
+external signing boundary. Every received event is checked for:
+
+- NIP-01 canonical event ID;
+- BIP-340 Schnorr signature;
+- configured kind and NIP-29 `h` channel tag;
+- NIP-42 AUTH challenge/relay tags when the relay requests authentication.
+
+Dropped WebSocket connections are closed and retried with bounded backoff;
+`close()` disables reconnects. The standard plugin path continues to use the
+Buzz CLI, where signing remains inside Buzz/ACP.
 
 ## Repository map
 

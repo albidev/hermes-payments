@@ -34,6 +34,24 @@ The remaining work is strict regtest reproducibility, operator-availability,
 production, custody, and mainnet evidence. Signet remains a test network and
 not a production or mainnet claim.
 
+## P7 plugin gate
+
+| Gate | Evidence required | Status |
+|---|---|---:|
+| Plugin tools and registration | All declared tools are registered with explicit schemas | **Verified in repository** — `plugins/hermes-payments/__init__.py` and `plugin.yaml` |
+| Local human approval | Approval is bound to `(intent_id, quote_id, prepared_hash)` and never serialized | **Verified in repository** — plugin tests |
+| Exact prepared execution | `hp_execute` rejects missing, redacted, or mismatched prepared hashes | **Verified in repository** — plugin tests |
+| Ambiguous dispatch safety | `PENDING`/unknown stays reconciliation-required; no retry path | **Verified in repository** — policy/plugin tests |
+| Two-process plugin boundary | Separate role identities, full IDs, real Buzz coordination harness | **Verified structurally** — `examples/p7_plugin/e2e_two_process.py` |
+| Live Signet settlement | Alice `SEND COMPLETE`, Bob `RECV COMPLETE`, Bob receipt, Alice `SETTLED` | **Verified** — fixed daemon, one send/recv, reconciliation, receipt acceptance |
+
+The latest live P7 attempt dispatched exactly once and initially returned
+`PENDING`, which correctly moved Alice to `RECONCILIATION_REQUIRED`. The fixed
+daemon completed the in-Ark swap seven seconds later. Read-only reconciliation
+returned `COMPLETE`; Bob verified his own `RECV` activity and published one
+receipt; Alice accepted it and reached `SETTLED`. The final evidence contains
+exactly one Alice `SEND` and one Bob `RECV` for the same settlement reference.
+
 ## Signet evidence history
 
 The earlier pre-settlement observation was a pending bootstrap balance and a complete `in_ark` quote. It is superseded as the current Signet status by the completed evidence in [live-signet-buzz-vertical.md](live-signet-buzz-vertical.md), which includes two Hermes processes, hosted kind-9 coordination, exact prepared execution, crash/restart recovery on the same state roots, matching complete Alice/Bob activity, and a Bob-authored receipt.

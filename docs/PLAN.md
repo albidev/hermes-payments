@@ -20,6 +20,7 @@ Prove one replay-safe, human-approved payment between two Hermes identities thro
 | Gate | Requirement | Status |
 |---|---|---:|
 | P6 | Two real Hermes processes, real Buzz channel, funded sender, real receipt, recovery evidence | **Complete on Signet: live crash/restart recovery verified; strict regtest and production remain open** |
+| P7 | Hermes plugin tools, local approval enforcement, two-process plugin boundary, and live operational evidence | **Implementation complete; deterministic suite green; live Signet settlement blocked on Wavelength engine behavior** |
 
 P5 and P5.1 are deterministic integration proofs. The combined Signet run is
 external evidence for the coordination and settlement path. P6 now has a
@@ -40,6 +41,22 @@ activity, records `COMPLETE`, `PENDING`, or `UNKNOWN`, and never calls `Send`
 again. It waits at most 12 minutes when the operator explicitly requests
 bounded polling. The next work is strict regtest reproducibility and production
 hardening, not another happy-path payment.
+
+## P7 plugin milestone
+
+The `hermes-payments` plugin is implementation-complete: its tools expose the
+policy boundary without moving approval into the model, bind execution to the
+exact prepared payload, reject redacted or mismatched hashes, and fail closed
+on ambiguous settlement. The two-process P7 harness also verifies role-specific
+Buzz identities, full cross-process identifiers, and one-shot local approval.
+
+The live P7 gate is now verified. With the fixed Wavelength daemon and Alice
+funded at 3,445 sats, the raw dispatch returned `PENDING` as designed; read-only
+reconciliation observed `COMPLETE` seven seconds later. Bob independently
+verified his `RECV`, published one receipt, and Alice accepted it. The run
+produced exactly one `SEND` and one `RECV` for the same settlement reference,
+with no automatic retry. The earlier insufficient-funds run remains historical
+evidence of the engine bug fixed in the Wavelength checkout.
 
 ## Rail evolution
 
