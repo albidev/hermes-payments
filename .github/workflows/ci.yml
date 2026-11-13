@@ -33,7 +33,7 @@ jobs:
         run: pytest -q
 
       - name: Run Ruff checks
-        run: ruff check src tests
+        run: ruff check .
 
       - name: Run mypy checks
         run: mypy src --ignore-missing-imports --no-incremental

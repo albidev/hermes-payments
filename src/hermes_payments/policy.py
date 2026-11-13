@@ -23,6 +23,8 @@ No Buzz or Wavelength I/O — all network interaction is behind the
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import os
 import tempfile
@@ -46,6 +48,7 @@ from .models import (
     PaymentReceipt,
     Rail,
     compute_id,
+    compute_prepared_hash,
 )
 from .state_machine import (
     PaymentState,
@@ -268,6 +271,7 @@ class PaymentOrchestrator:
         adapter: SettlementAdapter,
         store_path: Optional[str] = None,
         audit_path: Optional[str] = None,
+        state_path: Optional[str] = None,
         recipient_allowlist: Optional[Callable[[str], bool]] = None,
         rail_allowlist: Optional[Callable[[Rail], bool]] = None,
         clock: Optional[Callable[[], int]] = None,
@@ -275,10 +279,12 @@ class PaymentOrchestrator:
         self._adapter = adapter
         self._store = IdempotencyStore(path=store_path)
         self._audit = AuditLog(path=audit_path)
+        self._state_path = state_path
         self._recipient_allowlist = recipient_allowlist
         self._rail_allowlist = rail_allowlist
         self._clock: Callable[[], int] = clock or (lambda: int(time.time()))
         self._intents: Dict[str, IntentRecord] = {}
+        self._load_state()
 
     # ------------------------------------------------------------------
     # Public read interface
@@ -292,12 +298,195 @@ class PaymentOrchestrator:
         rec = self._intents.get(intent_id)
         return rec.intent if rec else None
 
+    def has_intent(self, intent_id: str) -> bool:
+        """Return whether this process has a durable record for an intent."""
+        return intent_id in self._intents
+
+    def get_quote(self, intent_id: str) -> Optional[PaymentQuote]:
+        """Return the tracked quote for an intent, if one exists."""
+        rec = self._intents.get(intent_id)
+        return rec.quote if rec else None
+
+    def get_prepared(self, intent_id: str) -> Optional[PrepareResult]:
+        """Return the tracked prepared result for an intent, if one exists."""
+        rec = self._intents.get(intent_id)
+        return rec.prepared if rec else None
+
+    def records(self) -> List[IntentRecord]:
+        """Return a snapshot of tracked records for status rendering."""
+        return list(self._intents.values())
+
     @property
     def _audit_log(self) -> AuditLog:
         return self._audit
 
     def now(self) -> int:
         return self._clock()
+
+    # ------------------------------------------------------------------
+    # Durable lifecycle state
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _encode_prepared(prepared: PrepareResult) -> dict[str, Any]:
+        """Encode an adapter prepare result without losing opaque bytes."""
+        return {
+            "fee_sat": prepared.fee_sat,
+            "prepared_hash": prepared.prepared_hash,
+            "rail": prepared.rail.value,
+            "prepared_payload": base64.b64encode(prepared.prepared_payload).decode("ascii"),
+        }
+
+    @staticmethod
+    def _decode_prepared(data: dict[str, Any]) -> PrepareResult:
+        """Decode and integrity-check a persisted adapter prepare result."""
+        try:
+            payload = base64.b64decode(data["prepared_payload"], validate=True)
+            prepared_hash = str(data["prepared_hash"])
+            if compute_prepared_hash(payload) != prepared_hash:
+                raise ValueError("prepared payload hash mismatch")
+            return PrepareResult(
+                fee_sat=int(data["fee_sat"]),
+                prepared_hash=prepared_hash,
+                rail=Rail(str(data["rail"])),
+                prepared_payload=payload,
+            )
+        except (KeyError, TypeError, ValueError, binascii.Error) as exc:
+            raise StateError(f"invalid persisted prepared payload: {exc}") from exc
+
+    @staticmethod
+    def _encode_reconciliation(
+        result: Optional[ReconcileResult],
+    ) -> Optional[dict[str, Any]]:
+        if result is None:
+            return None
+        return {
+            "status": result.status,
+            "settlement_ref": result.settlement_ref,
+            "amount_sat": result.amount_sat,
+            "fee_sat": result.fee_sat,
+            "rail": result.rail.value if result.rail is not None else None,
+            "verified": result.verified,
+            "error": result.error,
+        }
+
+    @staticmethod
+    def _decode_reconciliation(
+        data: Optional[dict[str, Any]],
+    ) -> Optional[ReconcileResult]:
+        if data is None:
+            return None
+        try:
+            rail = data.get("rail")
+            return ReconcileResult(
+                status=str(data["status"]),
+                settlement_ref=str(data.get("settlement_ref", "")),
+                amount_sat=int(data.get("amount_sat", 0)),
+                fee_sat=int(data.get("fee_sat", 0)),
+                rail=Rail(str(rail)) if rail is not None else None,
+                verified=bool(data.get("verified", False)),
+                error=data.get("error"),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise StateError(f"invalid persisted reconciliation result: {exc}") from exc
+
+    def _state_payload(self) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "intents": {
+                intent_id: {
+                    "intent": rec.intent.model_dump(mode="json"),
+                    "state": rec.state.value,
+                    "quote": rec.quote.model_dump(mode="json") if rec.quote else None,
+                    "prepared": self._encode_prepared(rec.prepared) if rec.prepared else None,
+                    "approval": rec.approval.model_dump(mode="json") if rec.approval else None,
+                    "receipt": rec.receipt.model_dump(mode="json") if rec.receipt else None,
+                    "reconciliation": self._encode_reconciliation(rec.reconciliation),
+                    "quote_expires_at": rec.quote_expires_at,
+                    "expires_at": rec.expires_at,
+                }
+                for intent_id, rec in self._intents.items()
+            },
+        }
+
+    def _save_state(self) -> None:
+        """Atomically persist lifecycle state, or raise."""
+        if not self._state_path:
+            return
+        path = os.path.abspath(self._state_path)
+        directory = os.path.dirname(path) or "."
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=directory, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(self._state_payload(), handle, sort_keys=True)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _load_state(self) -> None:
+        """Restore lifecycle state and fail closed if it is corrupt."""
+        if not self._state_path or not os.path.exists(self._state_path):
+            return
+        try:
+            with open(self._state_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if data.get("version") != 1 or not isinstance(data.get("intents"), dict):
+                raise ValueError("unsupported lifecycle state format")
+            for intent_id, raw in data["intents"].items():
+                intent = PaymentIntent.model_validate(raw["intent"])
+                if intent.id != intent_id:
+                    raise ValueError("intent key does not match intent.id")
+                quote_data = raw.get("quote")
+                approval_data = raw.get("approval")
+                receipt_data = raw.get("receipt")
+                rec = IntentRecord(
+                    intent=intent,
+                    state=PaymentState(str(raw["state"])),
+                    quote=PaymentQuote.model_validate(quote_data) if quote_data else None,
+                    prepared=(
+                        self._decode_prepared(raw["prepared"])
+                        if raw.get("prepared")
+                        else None
+                    ),
+                    approval=(
+                        PaymentApproval.model_validate(approval_data)
+                        if approval_data
+                        else None
+                    ),
+                    receipt=(
+                        PaymentReceipt.model_validate(receipt_data)
+                        if receipt_data
+                        else None
+                    ),
+                    reconciliation=self._decode_reconciliation(raw.get("reconciliation")),
+                    quote_expires_at=int(raw.get("quote_expires_at", 0)),
+                    expires_at=int(raw.get("expires_at", intent.expires_at)),
+                )
+                self._intents[intent_id] = rec
+                # Repair a partial restore without ever treating a durable
+                # lifecycle record as a new intent.
+                if not self._store.has_intent(intent_id):
+                    self._store.record_intent(intent_id)
+                if rec.approval is not None:
+                    triple = (
+                        intent_id,
+                        rec.approval.quote_id,
+                        rec.approval.prepared_hash,
+                    )
+                    if not self._store.has_approval(triple):
+                        self._store.record_approval(triple)
+                if rec.receipt is not None and not self._store.has_receipt(intent_id):
+                    self._store.record_receipt(intent_id, rec.receipt.settlement_ref)
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError, StateError) as exc:
+            self._intents.clear()
+            raise StateError(f"cannot load lifecycle state safely: {exc}") from exc
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -393,6 +582,7 @@ class PaymentOrchestrator:
             actor=intent.sender.pubkey,
             state=rec.state.value,
         )
+        self._save_state()
 
     def receive_quote(self, quote: PaymentQuote) -> None:
         """Receive a quote from the recipient.
@@ -430,8 +620,9 @@ class PaymentOrchestrator:
             fee_sat=quote.fee_sat,
             state=rec.state.value,
         )
+        self._save_state()
 
-    def prepare(self) -> PrepareResult:
+    def prepare(self, intent_id: Optional[str] = None) -> PrepareResult:
         """Call the adapter's prepare() — non-mutating dry run.
 
         - Validates the intent is in QUOTED state.
@@ -440,7 +631,15 @@ class PaymentOrchestrator:
         - Validates the adapter's fee <= max_fee_sat.
         - Transitions QUOTED → PREPARED.
         """
-        rec = self._find_by_state(PaymentState.QUOTED)
+        rec = (
+            self._get_record(intent_id)
+            if intent_id is not None
+            else self._find_by_state(PaymentState.QUOTED)
+        )
+        if rec.state != PaymentState.QUOTED:
+            raise StateError(
+                f"cannot prepare intent {rec.intent.id} from state {rec.state.value}"
+            )
         self._check_quote_expired(rec)
         self._validate_rail(self._adapter.rail)
 
@@ -460,6 +659,9 @@ class PaymentOrchestrator:
         except AdapterError as e:
             raise StateError(f"adapter prepare failed: {e}") from e
 
+        if compute_prepared_hash(prep.prepared_payload) != prep.prepared_hash:
+            raise StateError("adapter returned a prepared_hash that does not match its payload")
+
         if prep.fee_sat > rec.intent.max_fee_sat:
             raise StateError(
                 f"adapter fee {prep.fee_sat} exceeds max_fee_sat {rec.intent.max_fee_sat}"
@@ -476,6 +678,7 @@ class PaymentOrchestrator:
             fee_sat=prep.fee_sat,
             state=rec.state.value,
         )
+        self._save_state()
         return prep
 
     def approve(self, approval: PaymentApproval) -> None:
@@ -532,8 +735,9 @@ class PaymentOrchestrator:
             approver=approval.approver.pubkey,
             state=rec.state.value,
         )
+        self._save_state()
 
-    def execute(self) -> Optional[PaymentReceipt]:
+    def execute(self, intent_id: Optional[str] = None) -> Optional[PaymentReceipt]:
         """Execute the settlement after approval.
 
         - Validates the intent is in APPROVED state.
@@ -543,7 +747,15 @@ class PaymentOrchestrator:
         - On success → transitions EXECUTING → SETTLED, records receipt.
         - Returns the PaymentReceipt on success.
         """
-        rec = self._find_by_state(PaymentState.APPROVED)
+        rec = (
+            self._get_record(intent_id)
+            if intent_id is not None
+            else self._find_by_state(PaymentState.APPROVED)
+        )
+        if rec.state != PaymentState.APPROVED:
+            raise StateError(
+                f"cannot execute intent {rec.intent.id} from state {rec.state.value}"
+            )
 
         if rec.prepared is None:
             raise StateError("cannot execute: no prepared payload")
@@ -558,6 +770,9 @@ class PaymentOrchestrator:
             intent_id=rec.intent.id,
             state=rec.state.value,
         )
+        # Persist EXECUTING before touching the adapter. If the process dies
+        # after dispatch, restart remains fail-closed and can reconcile.
+        self._save_state()
 
         now = self.now()
         try:
@@ -573,6 +788,7 @@ class PaymentOrchestrator:
                 error=str(e),
                 state=rec.state.value,
             )
+            self._save_state()
             raise StateError(
                 f"ambiguous settlement result for intent {rec.intent.id}: {e}; "
                 f"transitioned to RECONCILIATION_REQUIRED — manual reconciliation required"
@@ -585,6 +801,7 @@ class PaymentOrchestrator:
                 error=str(e),
                 state=rec.state.value,
             )
+            self._save_state()
             raise StateError(
                 f"adapter error during execution for intent {rec.intent.id}: {e}; "
                 f"transitioned to RECONCILIATION_REQUIRED — manual reconciliation required"
@@ -620,6 +837,7 @@ class PaymentOrchestrator:
             amount_sat=receipt.amount_sat,
             state=rec.state.value,
         )
+        self._save_state()
         return receipt
 
     def receive_receipt(self, receipt: PaymentReceipt) -> PaymentReceipt:
@@ -713,6 +931,7 @@ class PaymentOrchestrator:
             settlement_ref=receipt.settlement_ref,
             state=rec.state.value,
         )
+        self._save_state()
         return receipt
 
     def confirm_settled(self, intent_id: str) -> None:
@@ -741,6 +960,7 @@ class PaymentOrchestrator:
             intent_id=rec.intent.id,
             state=rec.state.value,
         )
+        self._save_state()
 
     def reconcile_settlement(self, intent_id: str) -> ReconcileResult:
         """Inspect an ambiguous settlement without ever retrying dispatch.
@@ -782,6 +1002,7 @@ class PaymentOrchestrator:
             fee_sat=result.fee_sat,
             state=rec.state.value,
         )
+        self._save_state()
         return result
 
     def cancel(self, intent_id: str) -> None:

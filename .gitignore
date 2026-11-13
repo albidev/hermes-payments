@@ -17,3 +17,7 @@ secrets/
 artifacts/
 src/hermes_payments.egg-info/
 .worktrees/
+p7-*-state/
+p7-dbg-*
+p7-clean-state/
+p7-state/

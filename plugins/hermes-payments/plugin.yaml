@@ -1,0 +1,16 @@
+name: hermes-payments
+version: 0.2.0
+description: "Hermes Payment plugin — send/receive payments between agents over Buzz + Wavelength. Policy-first, fail-closed, no autonomous spending."
+author: albidev
+kind: standalone
+provides_hooks: []
+provides_tools:
+  - hp_pay
+  - hp_poll
+  - hp_prepare
+  - hp_execute
+  - hp_accept_quote
+  - hp_receive
+  - hp_reconcile
+  - hp_status
+  - hp_balance

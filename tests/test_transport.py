@@ -44,6 +44,7 @@ from hermes_payments.peer_transport import (
 )
 from hermes_payments.transport import (
     BuzzTransport,
+    BuzzTransportError,
     EnvelopeValidationError,
     FakeExecutor,
     RawBuzzEvent,
@@ -694,6 +695,42 @@ class TestBuzzTransport:
         transport.send_intent(intent)
         assert ex.sent[0][0] == "specific-uuid-1234"
 
+    def test_native_subscriber_receives_since_and_closes(self):
+        class Subscriber:
+            def __init__(self):
+                self.since = None
+                self.closed = False
+
+            def poll_events(self, *, since=None):
+                self.since = since
+                intent = make_intent()
+                return [
+                    RawBuzzEvent(
+                        id="native-event",
+                        pubkey=SENDER_PUBKEY,
+                        kind=9,
+                        content=encode_content(intent),
+                        tags=[["h", CHANNEL_UUID]],
+                        created_at=NOW,
+                    )
+                ]
+
+            def close(self):
+                self.closed = True
+
+        subscriber = Subscriber()
+        transport = BuzzTransport(
+            FakeExecutor(),
+            channel=CHANNEL_UUID,
+            clock=lambda: NOW,
+            nostr_sub=subscriber,
+        )
+
+        assert len(transport.receive_messages(since=NOW - 10)) == 1
+        assert subscriber.since == NOW - 10
+        transport.close()
+        assert subscriber.closed
+
     def test_receive_valid_messages(self):
         ex = FakeExecutor()
         transport = BuzzTransport(ex, channel=CHANNEL_UUID, clock=lambda: NOW)
@@ -750,6 +787,35 @@ class TestBuzzTransport:
             cursor_path=cursor_path,
         )
         assert restored.receive_messages() == []
+
+    def test_receive_cursor_save_failure_does_not_ack_event(self, tmp_path):
+        ex = FakeExecutor()
+        intent = make_intent()
+        ex.inject_event(
+            RawBuzzEvent(
+                id="ev-retry", pubkey=SENDER_PUBKEY, kind=9,
+                content=encode_content(intent),
+                tags=[["h", CHANNEL_UUID]], created_at=NOW,
+            )
+        )
+        transport = BuzzTransport(
+            ex,
+            channel=CHANNEL_UUID,
+            clock=lambda: NOW,
+            cursor_path=tmp_path / "cursor.json",
+        )
+        original_save = transport._save_cursor
+
+        def fail_save():
+            raise BuzzTransportError("cursor disk failure")
+
+        transport._save_cursor = fail_save  # type: ignore[method-assign]
+        with pytest.raises(BuzzTransportError, match="cursor disk failure"):
+            transport.receive_messages()
+        assert "ev-retry" not in transport._seen_event_ids
+
+        transport._save_cursor = original_save  # type: ignore[method-assign]
+        assert len(transport.receive_messages()) == 1
 
     def test_receive_filters_local_author(self):
         ex = FakeExecutor()
